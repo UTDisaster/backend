@@ -1,0 +1,50 @@
+# Byte-code files
+__pycache__/
+*.pyc
+*.pyd
+*.pyo
+
+# IDE-specific files
+.idea/  # For PyCharm/IntelliJ
+.vscode/ # For VS Code
+.mypy_cache/
+.pytest_cache/
+.cache/
+
+# Virtual environments
+.venv/
+env/
+venv/
+env.bak/
+venv.bak/
+
+# Distribution / build
+dist/
+build/
+*.egg-info/
+
+# Logs and databases
+log.txt
+*.log
+*.sqlite
+*.db
+*.db-*
+
+# Environment variables
+.env
+
+# OS-generated files
+.DS_Store # macOS
+Thumbs.db # Windows
+
+# Specific to testing/coverage
+.coverage
+htmlcov/
+coverage.xml
+
+# If using pipenv
+Pipfile.lock # recommended to include, but some choose to ignore
+
+# Specific to Jupyter notebooks if used
+.ipynb_checkpoints
+
