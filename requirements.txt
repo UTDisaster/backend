@@ -1,0 +1,4 @@
+python-dotenv
+SQLAlchemy
+uvicorn[standard]
+fastapi[standard]
