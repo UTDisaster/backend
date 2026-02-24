@@ -4,7 +4,7 @@
 
 ## Setup
 
-Recommended to use [https://docs.astral.sh/uv/getting-started/installation/](uv) to manage virtual environment and pip packages.
+Recommended to use [uv](https://docs.astral.sh/uv/getting-started/installation/) to manage virtual environment and pip packages.
 
 ### First Installation
 
@@ -43,4 +43,4 @@ curl 127.0.0.1:8000
 
 ## Deploying the Project
 
-...
+deployed via docker
