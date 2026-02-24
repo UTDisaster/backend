@@ -43,4 +43,6 @@ curl 127.0.0.1:8000
 
 ## Deploying the Project
 
-deployed via docker
+Deployed via docker
+
+... missing details about docker
