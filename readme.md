@@ -4,7 +4,7 @@
 
 ## Setup
 
-Recommended to use [https://docs.astral.sh/uv/getting-started/installation/](uv) to manage virtual environment and pip packages.
+Recommended to use [uv](https://docs.astral.sh/uv/getting-started/installation/) to manage virtual environment and pip packages.
 
 ### First Installation
 
