@@ -11,7 +11,7 @@ from typing import Any
 STEM_PATTERN = re.compile(
     r"^(?P<disaster>.+)_(?P<pair_id>\d+)_(?P<phase>pre|post)_disaster$"
 )
-WKT_POINT_PATTERN = re.compile(r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?")
+POINT_PATTERN = re.compile(r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?")
 
 
 def parse_args() -> argparse.Namespace:
@@ -33,12 +33,12 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def parse_wkt_points(wkt: str) -> list[list[float]]:
-    numbers = [float(x) for x in WKT_POINT_PATTERN.findall(wkt)]
-    points: list[list[float]] = []
+def parse_points(wkt: str) -> list[dict[str, float]]:
+    numbers = [float(x) for x in POINT_PATTERN.findall(wkt)]
+    points: list[dict[str, float]] = []
 
     for i in range(0, len(numbers) - 1, 2):
-        points.append([numbers[i], numbers[i + 1]])
+        points.append({"x": numbers[i], "y": numbers[i + 1]})
 
     return points
 
@@ -108,21 +108,83 @@ def normalize_classification(raw_classification: Any) -> str:
     return mapping.get(value, value.replace("-", "_"))
 
 
-def index_phase_locations(label_json: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    indexed: dict[str, dict[str, Any]] = {}
-    features = label_json.get("features", {}).get("xy", [])
+def build_output_image_name(pair_id: str, phase: str, source_image_path: Path) -> str:
+    pair_token = str(pair_id)
+    return f"{pair_token}_{phase}{source_image_path.suffix}"
+
+
+def index_points_by_uid(
+    label_json: dict[str, Any], feature_group: str
+) -> dict[str, list[dict[str, float]]]:
+    features = label_json.get("features", {}).get(feature_group, [])
+    points_by_uid: dict[str, list[dict[str, float]]] = {}
 
     for idx, feature in enumerate(features):
+        uid = get_feature_uid(feature, idx)
+        points_by_uid[uid] = parse_points(feature.get("wkt", ""))
+
+    return points_by_uid
+
+
+def index_phase_locations(label_json: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    indexed: dict[str, dict[str, Any]] = {}
+    xy_features = label_json.get("features", {}).get("xy", [])
+    lng_lat_features = label_json.get("features", {}).get("lng_lat", [])
+
+    points_xy_by_uid = index_points_by_uid(label_json, "xy")
+    points_lng_lat_by_uid = index_points_by_uid(label_json, "lng_lat")
+
+    for idx, feature in enumerate(xy_features):
         properties = feature.get("properties", {})
         uid = get_feature_uid(feature, idx)
         indexed[uid] = {
             "uid": uid,
             "type": properties.get("feature_type"),
             "classification": normalize_classification(properties.get("subtype")),
-            "points": parse_wkt_points(feature.get("wkt", "")),
+            "points": {
+                "xy": points_xy_by_uid.get(uid, []),
+                "lng_lat": points_lng_lat_by_uid.get(uid, []),
+            },
         }
 
+    for idx, feature in enumerate(lng_lat_features):
+        uid = get_feature_uid(feature, idx)
+        properties = feature.get("properties", {})
+        if uid not in indexed:
+            indexed[uid] = {
+                "uid": uid,
+                "type": properties.get("feature_type"),
+                "classification": normalize_classification(properties.get("subtype")),
+                "points": {
+                    "xy": points_xy_by_uid.get(uid, []),
+                    "lng_lat": points_lng_lat_by_uid.get(uid, []),
+                },
+            }
+        else:
+            indexed[uid]["points"]["lng_lat"] = points_lng_lat_by_uid.get(uid, [])
+
     return indexed
+
+
+def flatten_points(
+    xy_points: list[dict[str, float]], lng_lat_points: list[dict[str, float]]
+) -> list[dict[str, float | None]]:
+    merged_points: list[dict[str, float | None]] = []
+    max_len = max(len(xy_points), len(lng_lat_points))
+
+    for idx in range(max_len):
+        xy = xy_points[idx] if idx < len(xy_points) else {}
+        lng_lat = lng_lat_points[idx] if idx < len(lng_lat_points) else {}
+        merged_points.append(
+            {
+                "x": xy.get("x"),
+                "y": xy.get("y"),
+                "lat": lng_lat.get("y"),
+                "long": lng_lat.get("x"),
+            }
+        )
+
+    return merged_points
 
 
 def merge_locations(
@@ -144,11 +206,16 @@ def merge_locations(
                 "classification": post_loc.get("classification")
                 or pre_loc.get("classification"),
                 "prediction": None,
-                # "points": {
-                #     "pre": pre_loc.get("points", []),
-                #     "post": post_loc.get("points", []),
-                # },
-                "points": pre_loc.get("points", []),
+                "points": {
+                    "pre": flatten_points(
+                        pre_loc.get("points", {}).get("xy", []),
+                        pre_loc.get("points", {}).get("lng_lat", []),
+                    ),
+                    "post": flatten_points(
+                        post_loc.get("points", {}).get("xy", []),
+                        post_loc.get("points", {}).get("lng_lat", []),
+                    ),
+                },
             }
         )
 
@@ -170,14 +237,6 @@ def build_image_payload(
             "post": str(post_image_relative_path.as_posix()),
         },
         "locations": merge_locations(pre_label_json, post_label_json),
-        "height": {
-            "pre": pre_metadata.get("height"),
-            "post": post_metadata.get("height"),
-        },
-        "width": {
-            "pre": pre_metadata.get("width"),
-            "post": post_metadata.get("width"),
-        },
         "id": {
             "pre": pre_metadata.get("id"),
             "post": post_metadata.get("id"),
@@ -236,8 +295,12 @@ def main() -> None:
         disaster_output_dir = output_images_dir / disaster
         disaster_output_dir.mkdir(parents=True, exist_ok=True)
 
-        pre_image_dst = disaster_output_dir / pre_image_src.name
-        post_image_dst = disaster_output_dir / post_image_src.name
+        pre_image_dst = disaster_output_dir / build_output_image_name(
+            pair_id, "pre", pre_image_src
+        )
+        post_image_dst = disaster_output_dir / build_output_image_name(
+            pair_id, "post", post_image_src
+        )
         shutil.copy2(pre_image_src, pre_image_dst)
         shutil.copy2(post_image_src, post_image_dst)
 
