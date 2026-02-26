@@ -30,12 +30,6 @@ def parse_args() -> argparse.Namespace:
         help="Output folder for organized images and data.json (default: data/)",
     )
 
-    parser.add_argument(
-        "--all",
-        action="store_true",
-        help="Process all complete pre/post pairs instead of just one pair",
-    )
-
     return parser.parse_args()
 
 
@@ -67,6 +61,18 @@ def load_label_entries(labels_dir: Path) -> dict[tuple[str, str], dict[str, Path
     return pairs
 
 
+def get_all_pair_keys(
+    pairs: dict[tuple[str, str], dict[str, Path]],
+) -> list[tuple[str, str]]:
+    return sorted(pairs.keys())
+
+
+def get_pair_keys_for_disaster(
+    pairs: dict[tuple[str, str], dict[str, Path]], disaster_id: str
+) -> list[tuple[str, str]]:
+    return [key for key in get_all_pair_keys(pairs) if key[0] == disaster_id]
+
+
 def get_feature_uid(feature: dict[str, Any], fallback_index: int) -> str:
     properties = feature.get("properties", {})
     uid = (
@@ -82,6 +88,26 @@ def get_feature_uid(feature: dict[str, Any], fallback_index: int) -> str:
     return str(uid)
 
 
+def normalize_classification(raw_classification: Any) -> str:
+    if raw_classification is None:
+        return "unknown"
+
+    value = str(raw_classification).strip().lower()
+
+    mapping = {
+        "no-classification": "unknown",
+        "un-classified": "unknown",
+        "unclassified": "unknown",
+        "unknown": "unknown",
+        "no-damage": "none",
+        "minor-damage": "minor",
+        "major-damage": "severe",
+        "destroyed": "destroyed",
+    }
+
+    return mapping.get(value, value.replace("-", "_"))
+
+
 def index_phase_locations(label_json: dict[str, Any]) -> dict[str, dict[str, Any]]:
     indexed: dict[str, dict[str, Any]] = {}
     features = label_json.get("features", {}).get("xy", [])
@@ -92,7 +118,7 @@ def index_phase_locations(label_json: dict[str, Any]) -> dict[str, dict[str, Any
         indexed[uid] = {
             "uid": uid,
             "type": properties.get("feature_type"),
-            "classification": properties.get("subtype"),
+            "classification": normalize_classification(properties.get("subtype")),
             "points": parse_wkt_points(feature.get("wkt", "")),
         }
 
@@ -118,10 +144,11 @@ def merge_locations(
                 "classification": post_loc.get("classification")
                 or pre_loc.get("classification"),
                 "prediction": None,
-                "points": {
-                    "pre": pre_loc.get("points", []),
-                    "post": post_loc.get("points", []),
-                },
+                # "points": {
+                #     "pre": pre_loc.get("points", []),
+                #     "post": post_loc.get("points", []),
+                # },
+                "points": pre_loc.get("points", []),
             }
         )
 
@@ -179,8 +206,9 @@ def main() -> None:
 
     processed = 0
     result: dict[str, dict[str, Any]] = {}
-    ordered_pair_keys = sorted(pairs.keys())
-    max_pairs = len(ordered_pair_keys) if args.all else 1
+    ordered_pair_keys = get_pair_keys_for_disaster(pairs, "hurricane-florence")
+    if not ordered_pair_keys:
+        raise RuntimeError("No parseable label pairs found.")
 
     for disaster, pair_id in ordered_pair_keys:
         phase_paths = pairs[(disaster, pair_id)]
@@ -235,9 +263,6 @@ def main() -> None:
         )
 
         processed += 1
-        if processed >= max_pairs:
-            break
-
     if processed == 0:
         raise RuntimeError(
             "No complete pre/post pairs could be processed. "
