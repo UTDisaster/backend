@@ -1,7 +1,5 @@
 # Backend
 
-## Info
-
 ## Setup
 
 Recommended to use [uv](https://docs.astral.sh/uv/getting-started/installation/) to manage virtual environment and pip packages.
@@ -9,6 +7,7 @@ Recommended to use [uv](https://docs.astral.sh/uv/getting-started/installation/)
 ### First Installation
 
 Create virtual environment:
+
 ```bash
 uv venv
 ```
@@ -19,48 +18,49 @@ Install dependencies:
 uv pip install -r requirements.txt
 ```
 
-## After Pulling Changes
+## PostgreSQL + PostGIS
 
-Install possible new dependencies added by someone else:
+Note: The following names and passwords are only for development purposes, and will be different in production.
+
+Create a PostgreSQL database with PostGIS enabled, then set:
 
 ```bash
-uv pip install -r requirements.txt
+docker run --name utd-postgis \
+    -e POSTGRES_USER=utd \
+    -e POSTGRES_PASSWORD=utdpass \
+    -e POSTGRES_DB=utd_data \
+    -p 5432:5432 \
+    -d postgis/postgis:16-3.4
 ```
 
-## Running the Project for Development
+If this not the first time running, use now:
 
-### Running the Project
+```bash
+docker start utd-postgis
+```
+
+Make sure your environment has the variable DATABASE_URL which corresponds to the new DB.
+
+```bash
+export DATABASE_URL='postgresql+psycopg://utd:utdpass@localhost:5432/utd_data'
+```
+
+## Preprocessing Pipeline
+
+Run both parsing and DB loading in one command:
+
+```bash
+python3 util/preprocess-data.py ../test_images_labels_targets/test --output data-example
+```
+
+## Running the API
+
+If parsed images are not under `data-example`, point the API to the parser output root:
+
+```bash
+export PARSED_DATA_DIR='data-example'
+```
 
 ```bash
 uvicorn app.main:app --reload
 ```
-
-### Status Check
-
-```bash
-curl 127.0.0.1:8000
-```
-
-## Deploying the Project
-
-Deployed via docker
-
-... missing details about docker
-
-## Running the Data Parser
-
-The parser takes in the folder location of the source data and attempts to convert it to a format that will be easier to work with.
-
-Run it with:
-
-```bash
-python3 util/parse-source-data.py [path-of-source-data] --output [location-to-put-it]
-```
-
-eg. the example data was generated with (where the source data i downloaded was put outside of the backend folder/repo):
-
-```bash
-python3 util/parse-source-data.py ../test_images_labels_targets/test --output data-example
-```
-
-Note: you need to pass the folder that contains the subfolders images/ labels/ targets/, the downloaded data has some folder nesting.
