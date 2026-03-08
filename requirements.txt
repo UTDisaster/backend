@@ -1,4 +1,5 @@
 python-dotenv
 SQLAlchemy
+psycopg[binary]
 uvicorn[standard]
 fastapi[standard]

@@ -1,7 +1,5 @@
-#!/usr/bin/env python3
 from __future__ import annotations
 
-import argparse
 import json
 import re
 import shutil
@@ -12,25 +10,6 @@ STEM_PATTERN = re.compile(
     r"^(?P<disaster>.+)_(?P<pair_id>\d+)_(?P<phase>pre|post)_disaster$"
 )
 POINT_PATTERN = re.compile(r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?")
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Parse a dataset folder containing images/, labels/, and targets/."
-    )
-
-    parser.add_argument(
-        "data_folder",
-        help="Path to folder containing images/, labels/, and targets/ subfolders",
-    )
-
-    parser.add_argument(
-        "--output",
-        default="data",
-        help="Output folder for organized images and data.json (default: data/)",
-    )
-
-    return parser.parse_args()
 
 
 def parse_points(wkt: str) -> list[dict[str, float]]:
@@ -236,6 +215,16 @@ def build_image_payload(
             "pre": str(pre_image_relative_path.as_posix()),
             "post": str(post_image_relative_path.as_posix()),
         },
+        "size": {
+            "pre": {
+                "width": pre_metadata.get("width"),
+                "height": pre_metadata.get("height"),
+            },
+            "post": {
+                "width": post_metadata.get("width"),
+                "height": post_metadata.get("height"),
+            },
+        },
         "locations": merge_locations(pre_label_json, post_label_json),
         "id": {
             "pre": pre_metadata.get("id"),
@@ -244,18 +233,21 @@ def build_image_payload(
     }
 
 
-def main() -> None:
-    args = parse_args()
-    data_folder = Path(args.data_folder).expanduser().resolve()
-    images_dir = data_folder / "images"
-    labels_dir = data_folder / "labels"
-    targets_dir = data_folder / "targets"
+def run_parse_step(
+    data_folder: str | Path,
+    output: str | Path = "data",
+    disaster_id: str = "hurricane-florence",
+) -> dict[str, Any]:
+    data_folder_path = Path(data_folder).expanduser().resolve()
+    images_dir = data_folder_path / "images"
+    labels_dir = data_folder_path / "labels"
+    targets_dir = data_folder_path / "targets"
 
     for required in (images_dir, labels_dir, targets_dir):
         if not required.is_dir():
             raise FileNotFoundError(f"Missing required subfolder: {required}")
 
-    output_dir = Path(args.output).expanduser().resolve()
+    output_dir = Path(output).expanduser().resolve()
     output_images_dir = output_dir / "images"
     output_images_dir.mkdir(parents=True, exist_ok=True)
 
@@ -265,9 +257,9 @@ def main() -> None:
 
     processed = 0
     result: dict[str, dict[str, Any]] = {}
-    ordered_pair_keys = get_pair_keys_for_disaster(pairs, "hurricane-florence")
+    ordered_pair_keys = get_pair_keys_for_disaster(pairs, disaster_id)
     if not ordered_pair_keys:
-        raise RuntimeError("No parseable label pairs found.")
+        raise RuntimeError(f"No parseable label pairs found for disaster: {disaster_id}")
 
     for disaster, pair_id in ordered_pair_keys:
         phase_paths = pairs[(disaster, pair_id)]
@@ -326,6 +318,7 @@ def main() -> None:
         )
 
         processed += 1
+
     if processed == 0:
         raise RuntimeError(
             "No complete pre/post pairs could be processed. "
@@ -338,10 +331,8 @@ def main() -> None:
     with output_json.open("w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
 
-    print(f"Processed {processed} pre/post pair(s).")
-    print(f"Wrote parsed JSON: {output_json}")
-    print(f"Wrote organized images under: {output_images_dir}")
-
-
-if __name__ == "__main__":
-    main()
+    return {
+        "processed_pairs": processed,
+        "output_json": output_json,
+        "output_images_dir": output_images_dir,
+    }
