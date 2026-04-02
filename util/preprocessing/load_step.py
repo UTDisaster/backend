@@ -245,6 +245,7 @@ def run_load_step(
                         "image_pair_id": image_pair_id,
                         "feature_type": location.get("type"),
                         "classification": location.get("classification"),
+                        "prediction": location.get("prediction"),
                         "wkt": wkt,
                     }
                 )
@@ -271,6 +272,7 @@ def run_load_step(
                         image_pair_id,
                         feature_type,
                         classification,
+                        prediction,
                         geom,
                         centroid
                     )
@@ -279,6 +281,7 @@ def run_load_step(
                         :image_pair_id,
                         :feature_type,
                         :classification,
+                        :prediction,
                         ST_GeomFromText(:wkt, 4326),
                         ST_Centroid(ST_GeomFromText(:wkt, 4326))
                     )

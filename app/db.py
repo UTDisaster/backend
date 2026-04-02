@@ -81,6 +81,7 @@ locations = Table(
     ),
     Column("feature_type", Text, nullable=True),
     Column("classification", Text, nullable=True),
+    Column("prediction", Text, nullable=True),
     Column("geom", Geometry("Polygon", 4326), nullable=False),
     Column("centroid", Geometry("Point", 4326), nullable=False),
 )
@@ -88,6 +89,7 @@ locations = Table(
 Index("ix_locations_geom_gist", locations.c.geom, postgresql_using="gist")
 Index("ix_locations_centroid_gist", locations.c.centroid, postgresql_using="gist")
 Index("ix_locations_classification", locations.c.classification)
+Index("ix_locations_prediction", locations.c.prediction)
 
 
 @lru_cache(maxsize=4)
