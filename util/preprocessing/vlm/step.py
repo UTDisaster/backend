@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import random
+import secrets
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -84,13 +86,69 @@ def _bounds_from_points(
     return {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
 
 
+def print_prediction_table(rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        print("No VLM predictions produced.")
+        return
+
+    disaster_width = max(
+        len("disaster_id"), *(len(str(r["disaster_id"])) for r in rows)
+    )
+    pair_width = max(
+        len("image_pair_id"), *(len(str(r["image_pair_id"])) for r in rows)
+    )
+    uid_width = max(len("location_uid"), *(len(str(r["location_uid"])) for r in rows))
+    true_width = max(
+        len("classification"), *(len(str(r.get("classification"))) for r in rows)
+    )
+    pred_width = max(len("prediction"), *(len(str(r.get("prediction"))) for r in rows))
+
+    header = (
+        f"{'disaster_id'.ljust(disaster_width)}  "
+        f"{'image_pair_id'.ljust(pair_width)}  "
+        f"{'location_uid'.ljust(uid_width)}  "
+        f"{'classification'.ljust(true_width)}  "
+        f"{'prediction'.ljust(pred_width)}"
+    )
+    print(header)
+    print(
+        f"{'-' * disaster_width}  {'-' * pair_width}  {'-' * uid_width}  "
+        f"{'-' * true_width}  {'-' * pred_width}"
+    )
+
+    for row in rows:
+        print(
+            f"{str(row['disaster_id']).ljust(disaster_width)}  "
+            f"{str(row['image_pair_id']).ljust(pair_width)}  "
+            f"{str(row['location_uid']).ljust(uid_width)}  "
+            f"{str(row.get('classification')).ljust(true_width)}  "
+            f"{str(row.get('prediction')).ljust(pred_width)}"
+        )
+
+
 def run_vlm_step(
     parsed_json_path: str | Path,
     data_root: str | Path | None = None,
     output_json_path: str | Path | None = None,
     model_name: str | None = None,
     debug: bool = False,
+    max_locations: int | None = None,
+    max_locations_per_image: int | None = None,
+    write_output_json: bool = True,
+    randomize: bool = False,
+    random_seed: int | None = None,
 ) -> dict[str, Any]:
+    if max_locations is not None and max_locations <= 0:
+        raise ValueError("max_locations must be greater than 0")
+    if max_locations_per_image is not None and max_locations_per_image <= 0:
+        raise ValueError("max_locations_per_image must be greater than 0")
+
+    seed_used: int | None = None
+    rng: random.Random | None = None
+    if randomize:
+        seed_used = random_seed if random_seed is not None else secrets.randbits(32)
+        rng = random.Random(seed_used)
+
     input_path = Path(parsed_json_path).expanduser().resolve()
     if not input_path.is_file():
         raise FileNotFoundError(f"Input file not found: {input_path}")
@@ -124,12 +182,29 @@ def run_vlm_step(
     predicted_locations = 0
     skipped_locations = 0
     image_pairs = 0
+    predictions: list[dict[str, Any]] = []
 
     with tempfile.TemporaryDirectory(prefix="vlm-preprocess-") as temp_dir:
         temp_root = Path(temp_dir)
 
-        for disaster_payload in parsed.values():
-            for image in disaster_payload.get("images", []):
+        should_stop = False
+
+        disaster_items = list(parsed.items())
+        if rng:
+            rng.shuffle(disaster_items)
+
+        for disaster_id, disaster_payload in disaster_items:
+            if should_stop:
+                break
+
+            images = list(disaster_payload.get("images", []))
+            if rng:
+                rng.shuffle(images)
+
+            for image in images:
+                if should_stop:
+                    break
+
                 pre_path = _resolve_image_path(
                     root_dir, image.get("path", {}).get("pre")
                 )
@@ -146,13 +221,32 @@ def run_vlm_step(
                     continue
 
                 image_pairs += 1
+                image_pair_id = str(image.get("uid") or image.get("pairId") or "")
 
                 with Image.open(pre_path) as pre_img:
                     pre_size = (pre_img.width, pre_img.height)
                 with Image.open(post_path) as post_img:
                     post_size = (post_img.width, post_img.height)
 
-                for location in image.get("locations", []):
+                predicted_in_image = 0
+
+                locations = list(image.get("locations", []))
+                if rng:
+                    rng.shuffle(locations)
+
+                for location in locations:
+                    if (
+                        max_locations is not None
+                        and predicted_locations >= max_locations
+                    ):
+                        should_stop = True
+                        break
+                    if (
+                        max_locations_per_image is not None
+                        and predicted_in_image >= max_locations_per_image
+                    ):
+                        break
+
                     uid = str(location.get("uid", "unknown"))
                     points = _collect_xy_points(location)
 
@@ -195,22 +289,43 @@ def run_vlm_step(
                         target_image_path=None,
                         debug=debug,
                     )
-                    location["prediction"] = _normalize_prediction(damage)
+                    prediction = _normalize_prediction(damage)
+                    location["prediction"] = prediction
+
+                    predictions.append(
+                        {
+                            "disaster_id": disaster_id,
+                            "image_pair_id": image_pair_id,
+                            "pair_id": str(image.get("pairId", "")),
+                            "location_uid": uid,
+                            "classification": location.get("classification"),
+                            "prediction": prediction,
+                        }
+                    )
+
                     predicted_locations += 1
+                    predicted_in_image += 1
 
     output_path = (
         Path(output_json_path).expanduser().resolve()
         if output_json_path
         else input_path
     )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with output_path.open("w", encoding="utf-8") as f:
-        json.dump(parsed, f, indent=2)
+    if write_output_json:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("w", encoding="utf-8") as f:
+            json.dump(parsed, f, indent=2)
 
     return {
         "output_json": str(output_path),
         "image_pairs": image_pairs,
         "predicted_locations": predicted_locations,
         "skipped_locations": skipped_locations,
+        "predictions": predictions,
+        "json_written": write_output_json,
+        "max_locations": max_locations,
+        "max_locations_per_image": max_locations_per_image,
+        "randomized": randomize,
+        "random_seed_used": seed_used,
     }
