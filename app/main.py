@@ -10,7 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
-from app.db import get_engine
+from app.db import get_engine                          # ← db first
+from app.routers.chat import router as chat_router     # ← chat after
 
 app = FastAPI()
 app.add_middleware(
@@ -23,7 +24,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
+app.include_router(chat_router)                        # ← after app is created
 PARSED_DATA_DIR = (
     Path(os.getenv("PARSED_DATA_DIR", "data-example")).expanduser().resolve()
 )
@@ -268,7 +269,7 @@ async def get_image_pairs(
     return {"image_pairs": pairs}
 
 
-@app.get("/chat/conversations")
+@app.get("/chat/mock-conversations")
 async def list_conversations(search: Optional[str] = None) -> list[dict[str, str]]:
     chat_list = list(MOCK_CHATS.values())
 
@@ -283,9 +284,10 @@ async def list_conversations(search: Optional[str] = None) -> list[dict[str, str
     ]
 
 
-@app.get("/chat/conversations/{chat_id}")
+@app.get("/chat/mock-conversations/{chat_id}")
 async def get_chat(chat_id: str) -> dict[str, object]:
     chat = MOCK_CHATS.get(chat_id)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
     return chat
+
