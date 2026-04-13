@@ -13,13 +13,25 @@ from sqlalchemy import text
 from app.db import get_engine  # ← db first
 from app.routers.chat import router as chat_router  # ← chat after
 
+
+def _parse_cors_origins() -> list[str]:
+    raw = os.getenv("CORS_ALLOW_ORIGINS", "")
+    if raw.strip():
+        return [origin.strip() for origin in raw.split(",") if origin.strip()]
+    return [
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+    ]
+
+
+CORS_ALLOW_ORIGINS = _parse_cors_origins()
+CORS_ALLOW_ORIGIN_REGEX = os.getenv("CORS_ALLOW_ORIGIN_REGEX", "").strip() or None
+
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://127.0.0.1:5173",
-        "http://localhost:5173",
-    ],
+    allow_origins=CORS_ALLOW_ORIGINS,
+    allow_origin_regex=CORS_ALLOW_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
