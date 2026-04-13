@@ -10,8 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
-from app.db import get_engine                          # ← db first
-from app.routers.chat import router as chat_router     # ← chat after
+from app.db import get_engine  # ← db first
+from app.routers.chat import router as chat_router  # ← chat after
 
 app = FastAPI()
 app.add_middleware(
@@ -24,7 +24,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.include_router(chat_router)                        # ← after app is created
+app.include_router(chat_router)  # ← after app is created
 PARSED_DATA_DIR = (
     Path(os.getenv("PARSED_DATA_DIR", "data-example")).expanduser().resolve()
 )
@@ -72,6 +72,47 @@ async def health() -> dict[str, int | str]:
     return {"status": "OK", "status_code": status.HTTP_200_OK}
 
 
+def _normalize_bbox(
+    min_lng: float, min_lat: float, max_lng: float, max_lat: float
+) -> tuple[float, float, float, float]:
+    if min_lng > max_lng or min_lat > max_lat:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid bounding box: min values must be less than or equal to max values.",
+        )
+
+    epsilon = 1e-9
+    if min_lng == max_lng:
+        max_lng += epsilon
+    if min_lat == max_lat:
+        max_lat += epsilon
+
+    return min_lng, min_lat, max_lng, max_lat
+
+
+def _build_image_url(request: Request, path: Optional[str]) -> Optional[str]:
+    if not path:
+        return None
+
+    normalized_path = path.lstrip("/")
+    supabase_url = os.getenv("SUPABASE_URL", "").rstrip("/")
+    supabase_bucket = os.getenv("SUPABASE_IMAGES_BUCKET", "images").strip()
+    strip_prefix = os.getenv("SUPABASE_STRIP_PREFIX", "images/").strip().lstrip("/")
+    use_basename = os.getenv("SUPABASE_USE_BASENAME", "false").lower() == "true"
+
+    if strip_prefix and normalized_path.startswith(strip_prefix):
+        normalized_path = normalized_path[len(strip_prefix) :]
+        normalized_path = normalized_path.lstrip("/")
+
+    if use_basename:
+        normalized_path = Path(normalized_path).name
+
+    if supabase_url:
+        return f"{supabase_url}/storage/v1/object/public/{supabase_bucket}/{normalized_path}"
+
+    return str(request.url_for("assets", path=normalized_path))
+
+
 @app.get("/locations")
 async def get_locations(
     request: Request,
@@ -82,11 +123,9 @@ async def get_locations(
     disaster_id: Optional[str] = Query(None),
     limit: int = Query(5000, ge=1, le=20000),
 ) -> dict[str, list[dict[str, object]]]:
-    if min_lng >= max_lng or min_lat >= max_lat:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid bounding box: min values must be less than max values.",
-        )
+    min_lng, min_lat, max_lng, max_lat = _normalize_bbox(
+        min_lng, min_lat, max_lng, max_lat
+    )
 
     query = """
         SELECT
@@ -141,12 +180,8 @@ async def get_locations(
                 "feature_type": row["feature_type"],
                 "pre_path": pre_path,
                 "post_path": post_path,
-                "pre_url": str(request.url_for("assets", path=pre_path))
-                if pre_path
-                else None,
-                "post_url": str(request.url_for("assets", path=post_path))
-                if post_path
-                else None,
+                "pre_url": _build_image_url(request, pre_path),
+                "post_url": _build_image_url(request, post_path),
                 "geometry": json.loads(row["geometry"]) if row["geometry"] else None,
                 "centroid": {
                     "lng": row["centroid_lng"],
@@ -168,11 +203,9 @@ async def get_image_pairs(
     disaster_id: Optional[str] = Query(None),
     limit: int = Query(2000, ge=1, le=10000),
 ) -> dict[str, list[dict[str, object]]]:
-    if min_lng >= max_lng or min_lat >= max_lat:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid bounding box: min values must be less than max values.",
-        )
+    min_lng, min_lat, max_lng, max_lat = _normalize_bbox(
+        min_lng, min_lat, max_lng, max_lat
+    )
 
     query = """
         SELECT
@@ -235,12 +268,8 @@ async def get_image_pairs(
                 "post_path": post_path,
                 "pre_image_id": row["pre_image_id"],
                 "post_image_id": row["post_image_id"],
-                "pre_url": str(request.url_for("assets", path=pre_path))
-                if pre_path
-                else None,
-                "post_url": str(request.url_for("assets", path=post_path))
-                if post_path
-                else None,
+                "pre_url": _build_image_url(request, pre_path),
+                "post_url": _build_image_url(request, post_path),
                 "pre_bounds": (
                     [
                         [row["pre_min_lat"], row["pre_min_lng"]],
@@ -290,4 +319,3 @@ async def get_chat(chat_id: str) -> dict[str, object]:
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
     return chat
-
