@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import text
 
 from app.db import get_engine
-from app.services.gemini import chat as gemini_chat
+from app.services.gemini import (
+    ChatBackendUnavailableError,
+    chat as gemini_chat,
+)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+logger = logging.getLogger(__name__)
 
 
 # ── Pydantic schemas ─────────────────────────────────────────────────
@@ -115,11 +120,23 @@ def send_message(req: ChatRequest) -> dict:
 
         # Call Gemini with full history
         viewport_dict = req.viewport.model_dump() if req.viewport else None
-        reply, _, actions = gemini_chat(
-            user_message=req.message,
-            history=history,
-            viewport=viewport_dict,
-        )
+        actions: list[dict] = []
+        try:
+            reply, _, actions = gemini_chat(
+                user_message=req.message,
+                history=history,
+                viewport=viewport_dict,
+            )
+        except ChatBackendUnavailableError as exc:
+            logger.warning("Chat unavailable: status=%s", exc.status_code)
+            headers = {}
+            if exc.retry_after_seconds:
+                headers["Retry-After"] = str(exc.retry_after_seconds)
+            raise HTTPException(
+                status_code=503,
+                detail="Chat is temporarily unavailable. Please try again later.",
+                headers=headers or None,
+            ) from exc
 
         # Save both turns to DB
         _save_messages(conn, conversation_id, req.message, reply)
