@@ -19,9 +19,17 @@ logger = logging.getLogger(__name__)
 
 # ── Pydantic schemas ─────────────────────────────────────────────────
 
+class ViewportBounds(BaseModel):
+    minLat: float
+    maxLat: float
+    minLng: float
+    maxLng: float
+
+
 class ChatRequest(BaseModel):
     message:        str
     conversation_id: Optional[int] = None   # None = start new conversation
+    viewport:       Optional[ViewportBounds] = None
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -111,10 +119,13 @@ def send_message(req: ChatRequest) -> dict:
         history = _get_history(conn, conversation_id)
 
         # Call Gemini with full history
+        viewport_dict = req.viewport.model_dump() if req.viewport else None
+        actions: list[dict] = []
         try:
-            reply, _ = gemini_chat(
+            reply, _, actions = gemini_chat(
                 user_message=req.message,
-                history=history
+                history=history,
+                viewport=viewport_dict,
             )
         except ChatBackendUnavailableError as exc:
             logger.warning("Chat unavailable: status=%s", exc.status_code)
@@ -133,6 +144,7 @@ def send_message(req: ChatRequest) -> dict:
     return {
         "conversation_id": conversation_id,
         "reply":           reply,
+        "actions":         actions,
     }
 
 
