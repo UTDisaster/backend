@@ -14,9 +14,17 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 # ── Pydantic schemas ─────────────────────────────────────────────────
 
+class ViewportBounds(BaseModel):
+    minLat: float
+    maxLat: float
+    minLng: float
+    maxLng: float
+
+
 class ChatRequest(BaseModel):
     message:        str
     conversation_id: Optional[int] = None   # None = start new conversation
+    viewport:       Optional[ViewportBounds] = None
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -106,9 +114,11 @@ def send_message(req: ChatRequest) -> dict:
         history = _get_history(conn, conversation_id)
 
         # Call Gemini with full history
-        reply, _ = gemini_chat(
+        viewport_dict = req.viewport.model_dump() if req.viewport else None
+        reply, _, actions = gemini_chat(
             user_message=req.message,
-            history=history
+            history=history,
+            viewport=viewport_dict,
         )
 
         # Save both turns to DB
@@ -117,6 +127,7 @@ def send_message(req: ChatRequest) -> dict:
     return {
         "conversation_id": conversation_id,
         "reply":           reply,
+        "actions":         actions,
     }
 
 
