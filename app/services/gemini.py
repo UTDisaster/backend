@@ -5,6 +5,9 @@ import json
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+from sqlalchemy import text
+
+from app.db import get_engine
 
 load_dotenv()
 
@@ -100,6 +103,71 @@ TOOLS = [
                 }
             },
             "required": ["disaster_ids"]
+        }
+    },
+    {
+        "name": "navigate_map",
+        "description": (
+            "Navigate the user's map view to a specific location. "
+            "Use when the user asks to see an area, go somewhere, or when showing them relevant damage."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "lat": {"type": "number", "description": "Latitude"},
+                "lng": {"type": "number", "description": "Longitude"},
+                "zoom": {
+                    "type": "integer",
+                    "description": "Map zoom level, 15=neighborhood, 17=building detail, 18=max detail"
+                }
+            },
+            "required": ["lat", "lng"]
+        }
+    },
+    {
+        "name": "set_overlay_opacity",
+        "description": (
+            "Adjust the satellite image overlay transparency. "
+            "Use when the user asks to make images more/less transparent, or to see the base map better."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "opacity": {"type": "number", "description": "Opacity from 0.0 (fully transparent) to 1.0 (fully opaque)"}
+            },
+            "required": ["opacity"]
+        }
+    },
+    {
+        "name": "set_overlay_mode",
+        "description": (
+            "Switch the satellite imagery view. "
+            "'pre' shows before the disaster, 'post' shows after, 'none' hides satellite overlays entirely."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "mode": {"type": "string", "enum": ["pre", "post", "none"], "description": "Satellite overlay mode"}
+            },
+            "required": ["mode"]
+        }
+    },
+    {
+        "name": "set_classification_filter",
+        "description": (
+            "Control which building damage classifications are visible on the map. "
+            "Set to true to show, false to hide. Only include the classifications you want to change."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "destroyed": {"type": "boolean", "description": "Show/hide destroyed buildings"},
+                "severe": {"type": "boolean", "description": "Show/hide severely damaged buildings"},
+                "minor": {"type": "boolean", "description": "Show/hide minor damage buildings"},
+                "none": {"type": "boolean", "description": "Show/hide undamaged buildings"},
+                "unknown": {"type": "boolean", "description": "Show/hide unknown classification buildings"}
+            },
+            "required": []
         }
     }
 ]
@@ -207,28 +275,67 @@ def _run_tool(tool_name: str, args: dict) -> str:
             ).mappings().all()
             return json.dumps([dict(r) for r in rows])
 
+        elif tool_name == "navigate_map":
+            lat = args["lat"]
+            lng = args["lng"]
+            zoom = args.get("zoom", 17)
+            return json.dumps({
+                "status": "navigating",
+                "lat": lat,
+                "lng": lng,
+                "zoom": zoom,
+            })
+
+        elif tool_name == "set_overlay_opacity":
+            opacity = max(0.0, min(1.0, float(args["opacity"])))
+            return json.dumps({"status": "ok", "opacity": opacity})
+
+        elif tool_name == "set_overlay_mode":
+            mode = args["mode"] if args.get("mode") in ("pre", "post", "none") else "post"
+            return json.dumps({"status": "ok", "mode": mode})
+
+        elif tool_name == "set_classification_filter":
+            valid_keys = {"destroyed", "severe", "minor", "none", "unknown"}
+            sanitized = {k: bool(v) for k, v in args.items() if k in valid_keys}
+            return json.dumps({"status": "ok", "filters": sanitized})
+
     return json.dumps({"error": "Unknown tool"})
 
 
 # ── Main chat function ───────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are a disaster assessment assistant with access to a database of 
-satellite imagery analysis for natural disasters. You can query real data about building 
-damage, disaster events, and specific locations.
+SYSTEM_PROMPT = """CRITICAL: If the user's message is not about disaster assessment, building damage, map navigation, or overlay/filter controls, respond ONLY with 'I can only help with disaster assessment and map navigation.' Do NOT call any tools for off-topic messages.
 
-When answering questions:
-- Use the available tools to fetch real data before responding
-- Be specific with numbers and statistics when available
-- Be empathetic — this data represents real people's homes
-- If asked about a specific location, always fetch its assessment first
-- Keep responses clear and concise"""
+You are a disaster assessment tool. You control a map interface showing building damage from satellite imagery.
+
+Rules:
+- Be concise. One sentence confirmations for actions. Two to three sentences max for data queries.
+- Never editorialize or add emotional commentary.
+- Use the tools to fetch data before answering questions about damage.
+- When navigating the map, just confirm the action briefly.
+- When adjusting overlays or filters, just confirm what changed.
+- Only respond to queries about disaster assessment, map navigation, overlays, filters, and building damage data.
+- For unrelated questions, say: "I can only help with disaster assessment and map navigation."
+- To navigate to damaged areas: first call get_locations_by_damage to get coordinates, then call navigate_map with those lat/lng values.
+"""
 
 
 def chat(
     user_message: str,
     history: list[dict] | None = None,
-) -> tuple[str, list[dict]]:
+    viewport: dict | None = None,
+) -> tuple[str, list[dict], list[dict]]:
     history = history or []
+    actions: list[dict] = []
+
+    # Prepend viewport context so Gemini knows what area the user sees
+    effective_message = user_message
+    if viewport:
+        effective_message = (
+            f"[User is viewing: lat {viewport['minLat']:.2f}-{viewport['maxLat']:.2f}, "
+            f"lng {viewport['minLng']:.2f} to {viewport['maxLng']:.2f}]\n"
+            + user_message
+        )
 
     # Build contents from history + new message
     contents = []
@@ -240,22 +347,107 @@ def chat(
         ))
     contents.append(types.Content(
         role="user",
-        parts=[types.Part(text=user_message)]
+        parts=[types.Part(text=effective_message)]
     ))
 
-    response = client.models.generate_content(
-        model="gemini-2.0-flash",   # ← updated model
-        contents=contents,
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
+    # Convert TOOLS list to Gemini SDK tool declarations
+    tool_declarations = types.Tool(function_declarations=[
+        types.FunctionDeclaration(
+            name=t["name"],
+            description=t["description"],
+            parameters=t["parameters"],
         )
-    )
+        for t in TOOLS
+    ])
 
-    reply = response.text
+    # Tool-calling loop: Gemini may call tools, we execute them and feed results back
+    max_rounds = 5
+    for _ in range(max_rounds):
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                tools=[tool_declarations],
+            ),
+        )
+
+        # Collect any function calls from the response
+        function_calls = []
+        if response.candidates:
+            for candidate in response.candidates:
+                if candidate.content and candidate.content.parts:
+                    for part in candidate.content.parts:
+                        if hasattr(part, "function_call") and part.function_call:
+                            function_calls.append(part.function_call)
+
+        # If no function calls, Gemini is done — extract the text reply
+        if not function_calls:
+            break
+
+        # Append the model's function-call response to the conversation
+        contents.append(response.candidates[0].content)
+
+        # Execute each tool and build function-response parts
+        fn_response_parts = []
+        for fc in function_calls:
+            tool_name = fc.name
+            fc_args = dict(fc.args) if fc.args else {}
+
+            # Collect navigate_map calls as frontend actions (no DB needed)
+            if tool_name == "navigate_map":
+                lat = fc_args.get("lat")
+                lng = fc_args.get("lng")
+                zoom = fc_args.get("zoom", 17)
+                if lat is not None and lng is not None:
+                    actions.append({
+                        "type": "flyTo",
+                        "lat": float(lat),
+                        "lng": float(lng),
+                        "zoom": int(zoom),
+                    })
+            elif tool_name == "set_overlay_opacity":
+                clamped = max(0.0, min(1.0, float(fc_args["opacity"])))
+                actions.append({"type": "setOpacity", "value": clamped})
+            elif tool_name == "set_overlay_mode":
+                mode = fc_args.get("mode")
+                if mode in ("pre", "post", "none"):
+                    actions.append({"type": "setOverlayMode", "mode": mode})
+            elif tool_name == "set_classification_filter":
+                valid_keys = {"destroyed", "severe", "minor", "none", "unknown"}
+                sanitized = {k: bool(v) for k, v in fc_args.items() if k in valid_keys}
+                if sanitized:
+                    actions.append({"type": "setFilters", **sanitized})
+
+            result_str = _run_tool(tool_name, fc_args)
+            result_data = json.loads(result_str)
+            if not isinstance(result_data, dict):
+                result_data = {"result": result_data}
+            fn_response_parts.append(
+                types.Part.from_function_response(
+                    name=tool_name,
+                    response=result_data,
+                )
+            )
+
+        # Send tool results back to Gemini
+        contents.append(types.Content(
+            role="user",
+            parts=fn_response_parts,
+        ))
+
+    # Extract final text reply
+    reply = ""
+    if response.candidates:
+        for part in (response.candidates[0].content.parts or []):
+            if hasattr(part, "text") and part.text:
+                reply += part.text
+    if not reply:
+        reply = "I processed your request but couldn't generate a text response."
 
     updated_history = history + [
         {"role": "user", "parts": [user_message]},
-        {"role": "model", "parts": [reply]}
+        {"role": "model", "parts": [reply]},
     ]
 
-    return reply, updated_history
+    return reply, updated_history, actions
