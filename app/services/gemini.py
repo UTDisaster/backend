@@ -2,13 +2,44 @@ from __future__ import annotations
 
 import os
 import json
+import re
+from functools import lru_cache
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+from google.genai.errors import ClientError
+from sqlalchemy import text
+
+from app.db import get_engine
 
 load_dotenv()
 
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+
+class ChatBackendUnavailableError(Exception):
+    def __init__(
+        self, status_code: int = 503, retry_after_seconds: int | None = None
+    ) -> None:
+        super().__init__("Chat backend unavailable")
+        self.status_code = status_code
+        self.retry_after_seconds = retry_after_seconds
+
+
+def _extract_retry_after_seconds(message: str) -> int | None:
+    retry_in = re.search(r"retry in ([0-9]+(?:\.[0-9]+)?)s", message, re.IGNORECASE)
+    if retry_in:
+        return max(1, int(float(retry_in.group(1))))
+    retry_delay = re.search(r"'retryDelay': '([0-9]+)s'", message, re.IGNORECASE)
+    if retry_delay:
+        return max(1, int(retry_delay.group(1)))
+    return None
+
+
+@lru_cache(maxsize=1)
+def _get_client() -> genai.Client:
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise ChatBackendUnavailableError(status_code=503)
+    return genai.Client(api_key=api_key)
 # ── Tool definitions (Gemini decides when to call these) ─────────────
 
 TOOLS = [
@@ -243,13 +274,28 @@ def chat(
         parts=[types.Part(text=user_message)]
     ))
 
-    response = client.models.generate_content(
-        model="gemini-2.0-flash",   # ← updated model
-        contents=contents,
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
+    try:
+        client = _get_client()
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",   # ← updated model
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+            )
         )
-    )
+    except ClientError as exc:
+        message = str(exc)
+        status_code = getattr(exc, "status_code", 503)
+        if status_code == 429 or "RESOURCE_EXHAUSTED" in message:
+            raise ChatBackendUnavailableError(
+                status_code=503,
+                retry_after_seconds=_extract_retry_after_seconds(message),
+            ) from exc
+        raise ChatBackendUnavailableError(status_code=503) from exc
+    except ChatBackendUnavailableError:
+        raise
+    except Exception as exc:
+        raise ChatBackendUnavailableError(status_code=503) from exc
 
     reply = response.text
 
