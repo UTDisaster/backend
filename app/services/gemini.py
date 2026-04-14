@@ -184,15 +184,20 @@ TOOLS = [
         "name": "set_classification_filter",
         "description": (
             "Control which building damage classifications are visible on the map. "
-            "Set to true to show, false to hide. Only include the classifications you want to change."
+            "Set to true to show, false to hide. Only include the classifications you want to change. "
+            "Accepts canonical names (no-damage, minor-damage, major-damage, destroyed, unknown) "
+            "or short aliases (none, minor, severe, destroyed, unknown)."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "destroyed": {"type": "boolean", "description": "Show/hide destroyed buildings"},
-                "severe": {"type": "boolean", "description": "Show/hide severely damaged buildings"},
-                "minor": {"type": "boolean", "description": "Show/hide minor damage buildings"},
-                "none": {"type": "boolean", "description": "Show/hide undamaged buildings"},
+                "major-damage": {"type": "boolean", "description": "Show/hide buildings with major damage"},
+                "minor-damage": {"type": "boolean", "description": "Show/hide buildings with minor damage"},
+                "no-damage": {"type": "boolean", "description": "Show/hide undamaged buildings"},
+                "severe": {"type": "boolean", "description": "Alias for major-damage"},
+                "minor": {"type": "boolean", "description": "Alias for minor-damage"},
+                "none": {"type": "boolean", "description": "Alias for no-damage"},
                 "unknown": {"type": "boolean", "description": "Show/hide unknown classification buildings"}
             },
             "required": []
@@ -202,6 +207,53 @@ TOOLS = [
 
 
 # ── Tool execution (runs actual SQL) ─────────────────────────────────
+
+# Canonical damage classification → short alias used by the frontend filter UI.
+_CLASSIFICATION_ALIAS = {
+    "no-damage": "none",
+    "minor-damage": "minor",
+    "major-damage": "severe",
+    "destroyed": "destroyed",
+    "unknown": "unknown",
+    # Short aliases pass through unchanged so Gemini can use either vocabulary.
+    "none": "none",
+    "minor": "minor",
+    "severe": "severe",
+}
+
+
+def _normalize_classification_filter(args: dict) -> dict:
+    """Accept both canonical and short classification keys, emit short aliases."""
+    out: dict = {}
+    for key, value in args.items():
+        alias = _CLASSIFICATION_ALIAS.get(key)
+        if alias is not None:
+            out[alias] = bool(value)
+    return out
+
+
+def _synthesize_reply_from_actions(actions: list[dict]) -> str:
+    """Build a short natural-language summary when Gemini returns no text."""
+    if not actions:
+        return "Done."
+    summaries: list[str] = []
+    for action in actions:
+        kind = action.get("type")
+        if kind == "flyTo":
+            summaries.append("Moving the map to that location.")
+        elif kind == "setOpacity":
+            pct = int(round(float(action.get("value", 0)) * 100))
+            summaries.append(f"Overlay opacity set to {pct}%.")
+        elif kind == "setOverlayMode":
+            mode = action.get("mode", "")
+            label = {"pre": "pre-disaster", "post": "post-disaster", "none": "no"}.get(
+                mode, mode
+            )
+            summaries.append(f"Switched to {label} overlay.")
+        elif kind == "setFilters":
+            summaries.append("Damage filters updated.")
+    return " ".join(summaries) if summaries else "Done."
+
 
 def _run_tool(tool_name: str, args: dict) -> str:
     """Executes the requested tool and returns a JSON string result."""
@@ -323,8 +375,7 @@ def _run_tool(tool_name: str, args: dict) -> str:
             return json.dumps({"status": "ok", "mode": mode})
 
         elif tool_name == "set_classification_filter":
-            valid_keys = {"destroyed", "severe", "minor", "none", "unknown"}
-            sanitized = {k: bool(v) for k, v in args.items() if k in valid_keys}
+            sanitized = _normalize_classification_filter(args)
             return json.dumps({"status": "ok", "filters": sanitized})
 
     return json.dumps({"error": "Unknown tool"})
@@ -332,7 +383,7 @@ def _run_tool(tool_name: str, args: dict) -> str:
 
 # ── Main chat function ───────────────────────────────────────────────
 
-SYSTEM_PROMPT = """CRITICAL: If the user's message is not about disaster assessment, building damage, map navigation, or overlay/filter controls, respond ONLY with 'I can only help with disaster assessment and map navigation.' Do NOT call any tools for off-topic messages.
+SYSTEM_PROMPT = """CRITICAL: If the user's message is not about disaster assessment, building damage, disaster information, hurricane facts, map navigation, or overlay/filter controls, respond ONLY with 'I can only help with disaster assessment and map navigation.' Do NOT call any tools for off-topic messages.
 
 You are a disaster assessment tool. You control a map interface showing building damage from satellite imagery.
 
@@ -342,9 +393,19 @@ Rules:
 - Use the tools to fetch data before answering questions about damage.
 - When navigating the map, just confirm the action briefly.
 - When adjusting overlays or filters, just confirm what changed.
-- Only respond to queries about disaster assessment, map navigation, overlays, filters, and building damage data.
+- Only respond to queries about disaster assessment, disaster information, hurricane facts, map navigation, overlays, filters, and building damage data.
 - For unrelated questions, say: "I can only help with disaster assessment and map navigation."
 - To navigate to damaged areas: first call get_locations_by_damage to get coordinates, then call navigate_map with those lat/lng values.
+
+Knowledge:
+- Hurricane Florence was a Category 4 hurricane that weakened to Category 1 at landfall.
+- It made landfall near Wrightsville Beach, North Carolina on September 14, 2018.
+- Florence caused 53 direct deaths and $24.2 billion in damage (2018 USD).
+- Record rainfall of 35.93 inches (91.3 cm) was recorded in Elizabethtown, NC.
+- Over 150,000 structures were damaged across North and South Carolina.
+- Storm surge flooding reached up to 10 feet in some coastal areas.
+- The xBD dataset used in this tool covers the Myrtle Beach, SC area and surrounding regions.
+- Damage classifications in this system: no-damage, minor-damage, major-damage, destroyed, unknown.
 """
 
 
@@ -395,7 +456,9 @@ def chat(
     for _ in range(max_rounds):
         try:
             response = client.models.generate_content(
-                model="gemini-2.5-flash",
+                # flash-lite handles our tool-calling loop reliably; the full
+                # flash model intermittently returns 503 UNAVAILABLE under load.
+                model="gemini-2.5-flash-lite",
                 contents=contents,
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_PROMPT,
@@ -458,8 +521,7 @@ def chat(
                 if mode in ("pre", "post", "none"):
                     actions.append({"type": "setOverlayMode", "mode": mode})
             elif tool_name == "set_classification_filter":
-                valid_keys = {"destroyed", "severe", "minor", "none", "unknown"}
-                sanitized = {k: bool(v) for k, v in fc_args.items() if k in valid_keys}
+                sanitized = _normalize_classification_filter(fc_args)
                 if sanitized:
                     actions.append({"type": "setFilters", **sanitized})
 
@@ -487,7 +549,10 @@ def chat(
             if hasattr(part, "text") and part.text:
                 reply += part.text
     if not reply:
-        reply = "I processed your request but couldn't generate a text response."
+        # Gemini sometimes returns tool calls with no text summary.
+        # Synthesize a reply from the actions so the user always sees
+        # a meaningful response, not a sterile fallback.
+        reply = _synthesize_reply_from_actions(actions)
 
     updated_history = history + [
         {"role": "user", "parts": [user_message]},
