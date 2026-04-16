@@ -264,7 +264,18 @@ def _run_tool(tool_name: str, args: dict) -> str:
         if tool_name == "get_damage_stats":
             query = """
                 SELECT
-                    COALESCE(a.damage_level, l.classification, 'unknown') AS damage_level,
+                    COALESCE(
+                        CASE a.damage_level
+                            WHEN 'no-damage' THEN 'none'
+                            WHEN 'minor-damage' THEN 'minor'
+                            WHEN 'major-damage' THEN 'severe'
+                            WHEN 'destroyed' THEN 'destroyed'
+                            WHEN 'unknown' THEN 'unknown'
+                            ELSE a.damage_level
+                        END,
+                        l.classification,
+                        'unknown'
+                    ) AS damage_level,
                     COUNT(*) AS count
                 FROM locations l
                 JOIN image_pairs ip ON ip.id = l.image_pair_id
@@ -285,14 +296,34 @@ def _run_tool(tool_name: str, args: dict) -> str:
                     l.location_uid,
                     l.image_pair_id,
                     ip.disaster_id,
-                    COALESCE(a.damage_level, l.classification) AS damage_level,
+                    COALESCE(
+                        CASE a.damage_level
+                            WHEN 'no-damage' THEN 'none'
+                            WHEN 'minor-damage' THEN 'minor'
+                            WHEN 'major-damage' THEN 'severe'
+                            WHEN 'destroyed' THEN 'destroyed'
+                            WHEN 'unknown' THEN 'unknown'
+                            ELSE a.damage_level
+                        END,
+                        l.classification
+                    ) AS damage_level,
                     a.description,
                     ST_Y(l.centroid) AS lat,
                     ST_X(l.centroid) AS lng
                 FROM locations l
                 JOIN image_pairs ip ON ip.id = l.image_pair_id
                 LEFT JOIN chat.vlm_assessments a ON a.location_id = l.id
-                WHERE COALESCE(a.damage_level, l.classification) = :damage_level
+                WHERE COALESCE(
+                    CASE a.damage_level
+                        WHEN 'no-damage' THEN 'none'
+                        WHEN 'minor-damage' THEN 'minor'
+                        WHEN 'major-damage' THEN 'severe'
+                        WHEN 'destroyed' THEN 'destroyed'
+                        WHEN 'unknown' THEN 'unknown'
+                        ELSE a.damage_level
+                    END,
+                    l.classification
+                ) = :damage_level
             """
             params: dict = {"damage_level": args["damage_level"]}
             if args.get("disaster_id"):
@@ -342,7 +373,18 @@ def _run_tool(tool_name: str, args: dict) -> str:
                 text("""
                     SELECT
                         ip.disaster_id,
-                        COALESCE(a.damage_level, l.classification, 'unknown') AS damage_level,
+                        COALESCE(
+                        CASE a.damage_level
+                            WHEN 'no-damage' THEN 'none'
+                            WHEN 'minor-damage' THEN 'minor'
+                            WHEN 'major-damage' THEN 'severe'
+                            WHEN 'destroyed' THEN 'destroyed'
+                            WHEN 'unknown' THEN 'unknown'
+                            ELSE a.damage_level
+                        END,
+                        l.classification,
+                        'unknown'
+                    ) AS damage_level,
                         COUNT(*) AS count
                     FROM locations l
                     JOIN image_pairs ip ON ip.id = l.image_pair_id

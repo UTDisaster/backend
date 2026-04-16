@@ -4,4 +4,6 @@ psycopg[binary]
 uvicorn[standard]
 fastapi[standard]
 google-genai
-python-dotenv
+Pillow
+httpx
+tqdm
