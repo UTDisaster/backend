@@ -141,10 +141,24 @@ async def get_locations(
 
     query = """
         SELECT
+            l.id AS location_id,
             l.location_uid,
             l.image_pair_id,
             l.feature_type,
             l.classification,
+            COALESCE(
+                CASE a.damage_level
+                    WHEN 'no-damage' THEN 'none'
+                    WHEN 'minor-damage' THEN 'minor'
+                    WHEN 'major-damage' THEN 'severe'
+                    WHEN 'destroyed' THEN 'destroyed'
+                    WHEN 'unknown' THEN 'unknown'
+                    ELSE a.damage_level
+                END,
+                l.classification
+            ) AS damage_level,
+            a.confidence AS vlm_confidence,
+            a.description AS vlm_description,
             ip.disaster_id,
             ip.pre_path,
             ip.post_path,
@@ -153,12 +167,9 @@ async def get_locations(
             ST_Y(l.centroid) AS centroid_lat
         FROM locations AS l
         JOIN image_pairs AS ip ON ip.id = l.image_pair_id
+        LEFT JOIN chat.vlm_assessments AS a ON a.location_id = l.id
         WHERE
             l.geom && ST_MakeEnvelope(:min_lng, :min_lat, :max_lng, :max_lat, 4326)
-            AND ST_Intersects(
-                l.geom,
-                ST_MakeEnvelope(:min_lng, :min_lat, :max_lng, :max_lat, 4326)
-            )
     """
 
     params: dict[str, object] = {
@@ -185,10 +196,18 @@ async def get_locations(
         post_path = row["post_path"]
         features.append(
             {
+                "location_id": row["location_id"],
                 "location_uid": row["location_uid"],
                 "image_pair_id": row["image_pair_id"],
                 "disaster_id": row["disaster_id"],
                 "classification": row["classification"],
+                "damage_level": row["damage_level"],
+                "vlm_confidence": (
+                    float(row["vlm_confidence"])
+                    if row["vlm_confidence"] is not None
+                    else None
+                ),
+                "vlm_description": row["vlm_description"],
                 "feature_type": row["feature_type"],
                 "pre_path": pre_path,
                 "post_path": post_path,

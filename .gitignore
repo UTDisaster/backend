@@ -32,6 +32,13 @@ log.txt
 
 # Environment variables
 .env
+.env.*
+service_role.txt
+
+# VLM pipeline local artifacts
+data/
+data-example/
+*.jsonl
 
 # OS-generated files
 .DS_Store # macOS
