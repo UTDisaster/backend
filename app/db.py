@@ -9,6 +9,7 @@ load_dotenv()
 from sqlalchemy import (
     BigInteger,
     Column,
+    DateTime,
     Float,
     ForeignKey,
     Index,
@@ -86,6 +87,12 @@ locations = Table(
     Column("classification", Text, nullable=True),
     Column("geom", Geometry("Polygon", 4326), nullable=False),
     Column("centroid", Geometry("Point", 4326), nullable=False),
+    Column("street", Text, nullable=True),
+    Column("city", Text, nullable=True),
+    Column("county", Text, nullable=True),
+    Column("full_address", Text, nullable=True),
+    Column("address_source", Text, nullable=True),
+    Column("address_fetched_at", DateTime(timezone=True), nullable=True),
 )
 
 Index("ix_locations_geom_gist", locations.c.geom, postgresql_using="gist")
