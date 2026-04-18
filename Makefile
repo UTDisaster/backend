@@ -1,6 +1,6 @@
 # Backend dev commands. Run `make dev` after copying .env.example to .env.
 
-.PHONY: dev db seed test eval lint
+.PHONY: dev db seed test eval lint migrate
 
 .env:
 	cp .env.example .env
@@ -24,3 +24,6 @@ eval:
 
 lint:
 	ruff check . && black --check .
+
+migrate:
+	python util/migrate.py
