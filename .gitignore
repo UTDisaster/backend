@@ -33,6 +33,7 @@ log.txt
 # Environment variables
 .env
 .env.*
+!.env.example
 service_role.txt
 
 # VLM pipeline local artifacts

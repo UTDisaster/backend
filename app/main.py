@@ -10,8 +10,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
-from app.db import get_engine  # ← db first
-from app.routers.chat import router as chat_router  # ← chat after
+from app.config import validate_env
+from app.db import get_engine
+from app.routers.chat import router as chat_router
+
+validate_env()
 
 
 def _parse_cors_origins() -> list[str]:
@@ -36,7 +39,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.include_router(chat_router)  # ← after app is created
+app.include_router(chat_router)
 PARSED_DATA_DIR = (
     Path(os.getenv("PARSED_DATA_DIR", "data-example")).expanduser().resolve()
 )
