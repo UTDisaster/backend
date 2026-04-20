@@ -137,12 +137,25 @@ async def get_locations(
     max_lat: float = Query(...),
     disaster_id: Optional[str] = Query(None),
     limit: int = Query(5000, ge=1, le=20000),
+    include_address: bool = Query(False),
 ) -> dict[str, list[dict[str, object]]]:
     min_lng, min_lat, max_lng, max_lat = _normalize_bbox(
         min_lng, min_lat, max_lng, max_lat
     )
 
-    query = """
+    address_select = (
+        ",\n            l.street AS street,\n"
+        "            l.city AS city,\n"
+        "            l.county AS county,\n"
+        "            l.full_address AS full_address,\n"
+        "            l.address_source AS address_source,\n"
+        "            l.address_fetched_at AS address_fetched_at"
+        if include_address
+        else ""
+    )
+
+    # address_select is a hardcoded literal gated by a bool; no user input reaches the f-string.
+    query = f"""
         SELECT
             l.id AS location_id,
             l.location_uid,
@@ -167,7 +180,7 @@ async def get_locations(
             ip.post_path,
             ST_AsGeoJSON(l.geom) AS geometry,
             ST_X(l.centroid) AS centroid_lng,
-            ST_Y(l.centroid) AS centroid_lat
+            ST_Y(l.centroid) AS centroid_lat{address_select}
         FROM locations AS l
         JOIN image_pairs AS ip ON ip.id = l.image_pair_id
         LEFT JOIN chat.vlm_assessments AS a ON a.location_id = l.id
@@ -197,32 +210,45 @@ async def get_locations(
     for row in rows:
         pre_path = row["pre_path"]
         post_path = row["post_path"]
-        features.append(
-            {
-                "location_id": row["location_id"],
-                "location_uid": row["location_uid"],
-                "image_pair_id": row["image_pair_id"],
-                "disaster_id": row["disaster_id"],
-                "classification": row["classification"],
-                "damage_level": row["damage_level"],
-                "vlm_confidence": (
-                    float(row["vlm_confidence"])
-                    if row["vlm_confidence"] is not None
-                    else None
-                ),
-                "vlm_description": row["vlm_description"],
-                "feature_type": row["feature_type"],
-                "pre_path": pre_path,
-                "post_path": post_path,
-                "pre_url": _build_image_url(request, pre_path),
-                "post_url": _build_image_url(request, post_path),
-                "geometry": json.loads(row["geometry"]) if row["geometry"] else None,
-                "centroid": {
-                    "lng": row["centroid_lng"],
-                    "lat": row["centroid_lat"],
-                },
-            }
-        )
+        feature: dict[str, object] = {
+            "location_id": row["location_id"],
+            "location_uid": row["location_uid"],
+            "image_pair_id": row["image_pair_id"],
+            "disaster_id": row["disaster_id"],
+            "classification": row["classification"],
+            "damage_level": row["damage_level"],
+            "vlm_confidence": (
+                float(row["vlm_confidence"])
+                if row["vlm_confidence"] is not None
+                else None
+            ),
+            "vlm_description": row["vlm_description"],
+            "feature_type": row["feature_type"],
+            "pre_path": pre_path,
+            "post_path": post_path,
+            "pre_url": _build_image_url(request, pre_path),
+            "post_url": _build_image_url(request, post_path),
+            "geometry": json.loads(row["geometry"]) if row["geometry"] else None,
+            "centroid": {
+                "lng": row["centroid_lng"],
+                "lat": row["centroid_lat"],
+            },
+        }
+        if include_address:
+            if row["full_address"] is None and row["street"] is None and row["city"] is None and row["county"] is None:
+                feature["address"] = None
+            else:
+                fetched_at = row["address_fetched_at"]
+                # DB columns address_source / address_fetched_at map to JSON keys source / fetched_at.
+                feature["address"] = {
+                    "street": row["street"],
+                    "city": row["city"],
+                    "county": row["county"],
+                    "full_address": row["full_address"],
+                    "source": row["address_source"],
+                    "fetched_at": fetched_at.isoformat() if fetched_at is not None else None,
+                }
+        features.append(feature)
 
     return {"features": features}
 
