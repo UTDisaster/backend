@@ -499,8 +499,13 @@ def _run_tool(tool_name: str, args: dict) -> str:
             )
 
         elif tool_name == "nearby_damage":
-            lat = float(args["lat"])
-            lng = float(args["lng"])
+            try:
+                lat = float(args["lat"])
+                lng = float(args["lng"])
+            except (KeyError, TypeError, ValueError):
+                return json.dumps({"error": "lat and lng are required numeric fields"})
+            if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lng <= 180.0):
+                return json.dumps({"error": "lat/lng out of valid geographic range"})
             radius_m = int(args.get("radius_m", 200))
             agg = nearby_damage(conn, lat, lng, radius_m=radius_m)
             return json.dumps(
@@ -671,7 +676,7 @@ def chat(
             if tool_name == "lookup_damage_at_address":
                 matches = result_data.get("matches") or []
                 top = _dominant_match(matches)
-                if top is not None:
+                if top is not None and top.get("lat") is not None and top.get("lng") is not None:
                     actions.append({
                         "type": "flyTo",
                         "lat": float(top["lat"]),
