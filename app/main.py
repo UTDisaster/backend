@@ -253,6 +253,131 @@ async def get_locations(
     return {"features": features}
 
 
+_HOTSPOT_MIN_CLUSTER_SIZE = 10
+
+_NORMALIZED_DAMAGE_SQL = """
+        COALESCE(
+            CASE a.damage_level
+                WHEN 'no-damage' THEN 'none'
+                WHEN 'minor-damage' THEN 'minor'
+                WHEN 'major-damage' THEN 'severe'
+                WHEN 'destroyed' THEN 'destroyed'
+                WHEN 'unknown' THEN 'unknown'
+                ELSE a.damage_level
+            END,
+            l.classification
+        )
+"""
+
+
+@app.get("/disasters/{disaster_id}/summary")
+async def get_disaster_summary(disaster_id: str) -> dict[str, object]:
+    query = f"""
+        SELECT
+            COUNT(*) AS total_locations,
+            COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'none') AS none_count,
+            COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'minor') AS minor_count,
+            COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'severe') AS severe_count,
+            COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'destroyed') AS destroyed_count,
+            COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'unknown') AS unknown_count,
+            MIN(ST_Y(l.centroid)) AS min_lat,
+            MAX(ST_Y(l.centroid)) AS max_lat,
+            MIN(ST_X(l.centroid)) AS min_lng,
+            MAX(ST_X(l.centroid)) AS max_lng
+        FROM locations AS l
+        JOIN image_pairs AS ip ON ip.id = l.image_pair_id
+        LEFT JOIN chat.vlm_assessments AS a ON a.location_id = l.id
+        WHERE ip.disaster_id = :disaster_id
+    """
+
+    engine = get_engine()
+    with engine.connect() as conn:
+        row = (
+            conn.execute(text(query), {"disaster_id": disaster_id}).mappings().first()
+        )
+
+    if row is None or not row["total_locations"]:
+        raise HTTPException(status_code=404, detail="disaster not found")
+
+    return {
+        "disaster_id": disaster_id,
+        "total_locations": int(row["total_locations"]),
+        "by_classification": {
+            "none": int(row["none_count"] or 0),
+            "minor": int(row["minor_count"] or 0),
+            "severe": int(row["severe_count"] or 0),
+            "destroyed": int(row["destroyed_count"] or 0),
+            "unknown": int(row["unknown_count"] or 0),
+        },
+        "bbox": {
+            "minLat": row["min_lat"],
+            "minLng": row["min_lng"],
+            "maxLat": row["max_lat"],
+            "maxLng": row["max_lng"],
+        },
+    }
+
+
+@app.get("/locations/hotspots")
+async def get_location_hotspots(
+    disaster_id: str = Query(...),
+    limit: int = Query(10, ge=1, le=50),
+) -> dict[str, list[dict[str, object]]]:
+    query = f"""
+        SELECT
+            round(ST_Y(l.centroid)::numeric, 2) AS lat_bin,
+            round(ST_X(l.centroid)::numeric, 2) AS lng_bin,
+            COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'severe') AS severe_count,
+            COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'destroyed') AS destroyed_count,
+            COUNT(*) AS total_count
+        FROM locations AS l
+        JOIN image_pairs AS ip ON ip.id = l.image_pair_id
+        LEFT JOIN chat.vlm_assessments AS a ON a.location_id = l.id
+        WHERE ip.disaster_id = :disaster_id
+          AND l.centroid IS NOT NULL
+        GROUP BY lat_bin, lng_bin
+        HAVING (
+            COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'severe')
+          + COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'destroyed')
+        ) > 0
+        AND COUNT(*) >= {_HOTSPOT_MIN_CLUSTER_SIZE}
+        ORDER BY
+            (
+                COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'severe')
+              + COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'destroyed')
+            ) DESC,
+            COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'destroyed') DESC
+        LIMIT :limit
+    """
+
+    engine = get_engine()
+    with engine.connect() as conn:
+        rows = (
+            conn.execute(
+                text(query),
+                {"disaster_id": disaster_id, "limit": limit},
+            )
+            .mappings()
+            .all()
+        )
+
+    hotspots: list[dict[str, object]] = []
+    for row in rows:
+        severe = int(row["severe_count"] or 0)
+        destroyed = int(row["destroyed_count"] or 0)
+        hotspots.append(
+            {
+                "lat": float(row["lat_bin"]),
+                "lng": float(row["lng_bin"]),
+                "severe": severe,
+                "destroyed": destroyed,
+                "total": int(row["total_count"] or 0),
+            }
+        )
+
+    return {"hotspots": hotspots}
+
+
 @app.get("/image-pairs")
 async def get_image_pairs(
     request: Request,
