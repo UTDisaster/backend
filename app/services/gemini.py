@@ -11,6 +11,10 @@ from google.genai.errors import ClientError
 from sqlalchemy import text
 
 from app.db import get_engine
+from app.services.location_queries import (
+    lookup_damage_at_address,
+    nearby_damage,
+)
 
 load_dotenv()
 
@@ -202,7 +206,44 @@ TOOLS = [
             },
             "required": []
         }
-    }
+    },
+    {
+        "name": "lookup_damage_at_address",
+        "description": (
+            "Fuzzy-match an address, street name, house, or neighborhood/block string "
+            "and return damage aggregates for each matching group. "
+            "Use when the user asks about damage at a specific street, address, or neighborhood."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Street name, address, or neighborhood text to match (min 4 chars).",
+                }
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "nearby_damage",
+        "description": (
+            "Aggregate damage counts within a radius of a lat/lng point. "
+            "Use when the user asks what's damaged near a coordinate, point of interest, or block."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "lat": {"type": "number", "description": "Latitude of the center point"},
+                "lng": {"type": "number", "description": "Longitude of the center point"},
+                "radius_m": {
+                    "type": "integer",
+                    "description": "Search radius in meters. Clamped to [20, 5000]. Default 200.",
+                },
+            },
+            "required": ["lat", "lng"],
+        },
+    },
 ]
 
 
@@ -230,6 +271,21 @@ def _normalize_classification_filter(args: dict) -> dict:
         if alias is not None:
             out[alias] = bool(value)
     return out
+
+
+def _dominant_match(matches: list[dict]) -> dict | None:
+    """Return the top match if it's the only one or clearly dominates the runner-up."""
+    if not matches:
+        return None
+    if len(matches) == 1:
+        return matches[0]
+    top, runner = matches[0], matches[1]
+    top_score = float(top.get("score") or 0.0)
+    runner_score = float(runner.get("score") or 0.0)
+    # Dominant when the top score is meaningfully larger than the next candidate.
+    if top_score - runner_score >= 0.2:
+        return top
+    return None
 
 
 def _synthesize_reply_from_actions(actions: list[dict]) -> str:
@@ -420,12 +476,54 @@ def _run_tool(tool_name: str, args: dict) -> str:
             sanitized = _normalize_classification_filter(args)
             return json.dumps({"status": "ok", "filters": sanitized})
 
+        elif tool_name == "lookup_damage_at_address":
+            query = str(args.get("query") or "")
+            matches = lookup_damage_at_address(conn, query)
+            return json.dumps(
+                {
+                    "matches": [
+                        {
+                            "street": m.street,
+                            "city": m.city,
+                            "county": m.county,
+                            "total": m.total,
+                            "severe": m.severe,
+                            "destroyed": m.destroyed,
+                            "lat": m.lat,
+                            "lng": m.lng,
+                            "score": m.score,
+                        }
+                        for m in matches
+                    ]
+                }
+            )
+
+        elif tool_name == "nearby_damage":
+            try:
+                lat = float(args["lat"])
+                lng = float(args["lng"])
+            except (KeyError, TypeError, ValueError):
+                return json.dumps({"error": "lat and lng are required numeric fields"})
+            if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lng <= 180.0):
+                return json.dumps({"error": "lat/lng out of valid geographic range"})
+            radius_m = int(args.get("radius_m", 200))
+            agg = nearby_damage(conn, lat, lng, radius_m=radius_m)
+            return json.dumps(
+                {
+                    "none": agg.none,
+                    "minor": agg.minor,
+                    "severe": agg.severe,
+                    "destroyed": agg.destroyed,
+                    "unknown": agg.unknown,
+                }
+            )
+
     return json.dumps({"error": "Unknown tool"})
 
 
 # ── Main chat function ───────────────────────────────────────────────
 
-SYSTEM_PROMPT = """CRITICAL: If the user's message is not about disaster assessment, building damage, disaster information, hurricane facts, map navigation, or overlay/filter controls, respond ONLY with 'I can only help with disaster assessment and map navigation.' Do NOT call any tools for off-topic messages.
+SYSTEM_PROMPT = """CRITICAL: If the user's message is not about disaster assessment, building damage, disaster information, hurricane facts, map navigation, overlay/filter controls, or damage at a specific address, street, house, neighborhood, or block, respond ONLY with 'I can only help with disaster assessment and map navigation.' Do NOT call any tools for off-topic messages.
 
 You are a disaster assessment tool. You control a map interface showing building damage from satellite imagery.
 
@@ -435,9 +533,10 @@ Rules:
 - Use the tools to fetch data before answering questions about damage.
 - When navigating the map, just confirm the action briefly.
 - When adjusting overlays or filters, just confirm what changed.
-- Only respond to queries about disaster assessment, disaster information, hurricane facts, map navigation, overlays, filters, and building damage data.
+- Only respond to queries about disaster assessment, disaster information, hurricane facts, map navigation, overlays, filters, building damage data, and damage at a specific address, street, house, neighborhood, or block.
 - For unrelated questions, say: "I can only help with disaster assessment and map navigation."
 - To navigate to damaged areas: first call get_locations_by_damage to get coordinates, then call navigate_map with those lat/lng values.
+- For address/street/house/neighborhood/block queries, call lookup_damage_at_address with the user's query. For "what's damaged near here" or a coordinate, call nearby_damage. If no matches come back, say so briefly.
 
 Knowledge:
 - Hurricane Florence was a Category 4 hurricane that weakened to Category 1 at landfall.
@@ -571,6 +670,20 @@ def chat(
             result_data = json.loads(result_str)
             if not isinstance(result_data, dict):
                 result_data = {"result": result_data}
+
+            # Synthetic flyTo when an address lookup resolves to a single or
+            # clearly dominant match — let the map follow the answer.
+            if tool_name == "lookup_damage_at_address":
+                matches = result_data.get("matches") or []
+                top = _dominant_match(matches)
+                if top is not None and top.get("lat") is not None and top.get("lng") is not None:
+                    actions.append({
+                        "type": "flyTo",
+                        "lat": float(top["lat"]),
+                        "lng": float(top["lng"]),
+                        "zoom": 17,
+                    })
+
             fn_response_parts.append(
                 types.Part.from_function_response(
                     name=tool_name,
