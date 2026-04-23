@@ -59,7 +59,9 @@ def build_polygon_wkt(location: dict[str, Any]) -> str | None:
     return f"POLYGON(({coord_text}))"
 
 
-def solve_linear_3x3(matrix: list[list[float]], values: list[float]) -> list[float] | None:
+def solve_linear_3x3(
+    matrix: list[list[float]], values: list[float]
+) -> list[float] | None:
     augmented = [row[:] + [values[idx]] for idx, row in enumerate(matrix)]
 
     for pivot in range(3):
@@ -72,7 +74,10 @@ def solve_linear_3x3(matrix: list[list[float]], values: list[float]) -> list[flo
             return None
 
         if pivot_row != pivot:
-            augmented[pivot], augmented[pivot_row] = augmented[pivot_row], augmented[pivot]
+            augmented[pivot], augmented[pivot_row] = (
+                augmented[pivot_row],
+                augmented[pivot],
+            )
 
         pivot_value = augmented[pivot][pivot]
         for col in range(pivot, 4):
@@ -211,7 +216,9 @@ def run_load_step(
         disaster_rows.append({"id": disaster_id, "type": disaster_payload.get("type")})
 
         for image in disaster_payload.get("images", []):
-            image_pair_id = str(image.get("uid") or f"{disaster_id}-{image.get('pairId')}")
+            image_pair_id = str(
+                image.get("uid") or f"{disaster_id}-{image.get('pairId')}"
+            )
             pre_bounds = compute_phase_bounds(image, "pre")
             post_bounds = compute_phase_bounds(image, "post")
             image_pair_rows.append(
@@ -253,7 +260,9 @@ def run_load_step(
         ensure_schema(conn)
 
         conn.execute(
-            text("TRUNCATE TABLE locations, image_pairs, disasters RESTART IDENTITY CASCADE")
+            text(
+                "TRUNCATE TABLE locations, image_pairs, disasters RESTART IDENTITY CASCADE"
+            )
         )
 
         if disaster_rows:

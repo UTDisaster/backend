@@ -3,3 +3,7 @@ SQLAlchemy
 psycopg[binary]
 uvicorn[standard]
 fastapi[standard]
+google-genai
+Pillow
+httpx
+tqdm

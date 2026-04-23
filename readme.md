@@ -1,66 +1,28 @@
 # Backend
 
-## Setup
-
-Recommended to use [uv](https://docs.astral.sh/uv/getting-started/installation/) to manage virtual environment and pip packages.
-
-### First Installation
-
-Create virtual environment:
+## Quick Start
 
 ```bash
-uv venv
+cp .env.example .env
+# edit .env and fill in GEMINI_API_KEY and any other values you need
+make dev
 ```
 
-Install dependencies:
+Once the stack is up, `GET http://localhost:8000/health` should return 200.
 
-```bash
-uv pip install -r requirements.txt
-```
+## Environment
 
-## PostgreSQL + PostGIS
+All environment variables the backend reads are listed in [`.env.example`](./.env.example). That file is the canonical reference — one variable per line, grouped by concern (database, Gemini, preprocessing, Supabase image storage, CORS).
 
-Note: The following names and passwords are only for development purposes, and will be different in production.
+## Common tasks
 
-Create a PostgreSQL database with PostGIS enabled, then set:
+- `make dev` — build and run the full stack (api + db) via docker compose
+- `make db` — start only the Postgres/PostGIS container
+- `make seed` — run `util/seed_minimal.py`
+- `make test` — run pytest
+- `make eval` — run the VLM evaluation against `hurricane-florence`
+- `make lint` — run `ruff check .` and `black --check .`
 
-```bash
-docker run --name utd-postgis \
-    -e POSTGRES_USER=utd \
-    -e POSTGRES_PASSWORD=utdpass \
-    -e POSTGRES_DB=utd_data \
-    -p 5432:5432 \
-    -d postgis/postgis:16-3.4
-```
+---
 
-If this not the first time running, use now:
-
-```bash
-docker start utd-postgis
-```
-
-Make sure your environment has the variable DATABASE_URL which corresponds to the new DB.
-
-```bash
-export DATABASE_URL='postgresql+psycopg://utd:utdpass@localhost:5432/utd_data'
-```
-
-## Preprocessing Pipeline
-
-Run both parsing and DB loading in one command:
-
-```bash
-python3 util/preprocess-data.py ../test_images_labels_targets/test --output data-example
-```
-
-## Running the API
-
-If parsed images are not under `data-example`, point the API to the parser output root:
-
-```bash
-export PARSED_DATA_DIR='data-example'
-```
-
-```bash
-uvicorn app.main:app --reload
-```
+For the non-Docker flow (manual uv + raw `docker run`), see [docs/manual-setup.md](./docs/manual-setup.md).
