@@ -8,6 +8,7 @@ from sqlalchemy import text
 
 from app.db import get_engine
 from app.services.gemini import chat as gemini_chat
+from app.services.news_ingest import extract_urls, fetch_articles, store_articles
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -17,6 +18,12 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 class ChatRequest(BaseModel):
     message:        str
     conversation_id: Optional[int] = None   # None = start new conversation
+
+
+class NewsImportRequest(BaseModel):
+    text: Optional[str] = None
+    urls: Optional[list[str]] = None
+    disaster_id: Optional[str] = None
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -105,11 +112,44 @@ def send_message(req: ChatRequest) -> dict:
         # Load history for multi-turn
         history = _get_history(conn, conversation_id)
 
-        # Call Gemini with full history
-        reply, _ = gemini_chat(
-            user_message=req.message,
-            history=history
-        )
+        pasted_urls = extract_urls(req.message)
+        if pasted_urls:
+            try:
+                articles = fetch_articles(pasted_urls)
+                store_articles(articles)
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Failed to import article links from the message: {exc}",
+                )
+
+        # Call Gemini with the conversation history.
+        has_article_links = bool(pasted_urls)
+        try:
+            reply, _ = gemini_chat(
+                user_message=req.message,
+                history=history
+            )
+        except Exception as exc:
+            message = str(exc).lower()
+            if "quota" in message or "429" in message or "resource exhausted" in message:
+                raise HTTPException(
+                    status_code=429,
+                    detail="Gemini quota was exceeded. The conversation history is now trimmed, but you may still need a higher quota or billing-enabled API key.",
+                )
+            if has_article_links:
+                reply = json.dumps(
+                    {
+                        "summary": "Gemini did not return a free-text answer, but the article links were imported successfully.",
+                        "citations": pasted_urls,
+                        "note": str(exc),
+                    }
+                )
+            else:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Gemini request failed: {exc}",
+                )
 
         # Save both turns to DB
         _save_messages(conn, conversation_id, req.message, reply)
@@ -120,6 +160,39 @@ def send_message(req: ChatRequest) -> dict:
     }
 
 
+@router.post("/news/import")
+def import_news(req: NewsImportRequest) -> dict:
+    """
+    Import one or more article links into the news article tables.
+    Accepts either a raw text block containing URLs or an explicit URL list.
+    """
+    urls = list(req.urls or [])
+    if req.text:
+        urls.extend(extract_urls(req.text))
+
+    # Preserve order while removing duplicates.
+    unique_urls: list[str] = []
+    seen: set[str] = set()
+    for url in urls:
+        cleaned = url.strip()
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            unique_urls.append(cleaned)
+
+    if not unique_urls:
+        raise HTTPException(status_code=400, detail="No URLs were provided")
+
+    try:
+        articles = fetch_articles(unique_urls)
+        stored = store_articles(articles, disaster_id=req.disaster_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to import articles: {exc}")
+
+    return {
+        "imported_count": len(stored),
+        "urls": unique_urls,
+        "articles": stored,
+    }
 @router.get("/conversations")
 def list_conversations(search: Optional[str] = Query(None)) -> list[dict]:
     """List all conversations."""

@@ -48,3 +48,6 @@ Pipfile.lock # recommended to include, but some choose to ignore
 # Specific to Jupyter notebooks if used
 .ipynb_checkpoints
 
+# Local sample images
+data-example/images/
+

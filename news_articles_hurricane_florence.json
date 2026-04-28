@@ -1,0 +1,39 @@
+{
+  "articles": [
+    {
+      "title": "Hurricane Florence",
+      "source": "Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Hurricane_Florence",
+      "disaster_id": "hurricane-florence",
+      "content": "Hurricane Florence was a Category 4 Atlantic hurricane in 2018 that formed from a tropical wave off Africa, intensified over the Atlantic, and made landfall near Wrightsville Beach, North Carolina on September 14, 2018. It brought extreme rainfall, widespread flooding, power outages, tornadoes, and major damage across the Carolinas and beyond. The storm caused 54 deaths and about $24.2 billion in damage.",
+      "summary": "Background and impact summary for Hurricane Florence, including formation, landfall, flooding, deaths, and damage."
+    },
+    {
+      "title": "Hurricane Florence: September 14, 2018",
+      "source": "National Weather Service Wilmington, NC",
+      "url": "https://www.weather.gov/ilm/hurricaneflorence",
+      "published_at": "2018-09-14",
+      "disaster_id": "hurricane-florence",
+      "content": "The National Weather Service summary describes Florence as a large, slow-moving Category 1 hurricane that made landfall on September 14, 2018 and then produced record-breaking rainfall across eastern North Carolina and northeastern South Carolina. It highlights flooding along major rivers, damage to roads, homes, businesses, trees, and electrical service, and reports severe impacts including fatalities, structure flooding, rescues, and disaster assistance registrations.",
+      "summary": "Official weather summary of Florence landfall, rainfall, flooding, and damage in the Carolinas."
+    },
+    {
+      "title": "Hurricane Florence",
+      "source": "Guy Carpenter",
+      "url": "https://www.guycarp.com/insights/2018/09/hurricane-florence.html",
+      "published_at": "2018-09-14",
+      "disaster_id": "hurricane-florence",
+      "content": "Guy Carpenter's event note explains Florence's landfall near Wrightsville Beach, North Carolina, the prolonged exposure caused by its slow movement, and the severe rainfall and flooding that followed. The report emphasizes significant property damage, catastrophic flooding in eastern North Carolina, and major impacts to portfolios and insured assets in the storm's path.",
+      "summary": "Industry risk summary focused on landfall timing, slow storm motion, and property/flooding impacts."
+    },
+    {
+      "title": "Hurricane Florence (2018)",
+      "source": "EBSCO Research Starters",
+      "url": "https://www.ebsco.com/research-starters/history/hurricane-florence-2018",
+      "published_at": "2018-09-15",
+      "disaster_id": "hurricane-florence",
+      "content": "EBSCO's overview describes Florence as a storm that formed near Cape Verde, reached major hurricane strength, weakened before landfall near Wrightsville Beach, and then slowed while dumping huge amounts of rain across the Carolinas. It summarizes the resulting flooding, tornadoes, power outages, deaths, and large-scale property damage across North Carolina and surrounding states.",
+      "summary": "Reference overview of Florence's storm track, flooding, fatalities, and regional damage."
+    }
+  ]
+}

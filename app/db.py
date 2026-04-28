@@ -12,6 +12,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Index,
+    Integer,
     MetaData,
     Table,
     Text,
@@ -91,6 +92,44 @@ locations = Table(
 Index("ix_locations_geom_gist", locations.c.geom, postgresql_using="gist")
 Index("ix_locations_centroid_gist", locations.c.centroid, postgresql_using="gist")
 Index("ix_locations_classification", locations.c.classification)
+
+
+news_articles = Table(
+    "news_articles",
+    metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column(
+        "disaster_id",
+        Text,
+        ForeignKey("disasters.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    Column("source", Text, nullable=True),
+    Column("title", Text, nullable=False),
+    Column("url", Text, nullable=True),
+    Column("published_at", Text, nullable=True),
+    Column("summary", Text, nullable=True),
+    Column("content", Text, nullable=False),
+)
+
+
+news_article_chunks = Table(
+    "news_article_chunks",
+    metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column(
+        "article_id",
+        BigInteger,
+        ForeignKey("news_articles.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("chunk_index", Integer, nullable=False),
+    Column("content", Text, nullable=False),
+)
+
+Index("ix_news_articles_disaster_id", news_articles.c.disaster_id)
+Index("ix_news_articles_title", news_articles.c.title)
+Index("ix_news_article_chunks_article_id", news_article_chunks.c.article_id)
 
 
 @lru_cache(maxsize=4)
