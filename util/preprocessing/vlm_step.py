@@ -12,8 +12,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
-
 ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
@@ -21,6 +19,7 @@ if str(ROOT_DIR) not in sys.path:
 import sqlalchemy as sa
 
 from app.db import get_engine
+from app.env_loader import load_app_env
 from app.services.cropping import crop_for_location, lnglat_ring_to_xy
 from app.services.storage import ContentImageStore, ImageStore
 from app.services.vlm import (
@@ -32,7 +31,7 @@ from app.services.vlm import (
     VLMFatalError,
 )
 
-load_dotenv()
+load_app_env()
 
 logger = logging.getLogger(__name__)
 

@@ -4,19 +4,19 @@ import os
 import json
 import re
 from functools import lru_cache
-from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from google.genai.errors import ClientError
 from sqlalchemy import text
 
 from app.db import get_engine
+from app.env_loader import load_app_env
 from app.services.location_queries import (
     lookup_damage_at_address,
     nearby_damage,
 )
 
-load_dotenv()
+load_app_env()
 
 
 class ChatBackendUnavailableError(Exception):

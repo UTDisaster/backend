@@ -3,11 +3,11 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from app.config import get_database_url
+from app.env_loader import load_app_env
 
-load_dotenv()
+load_app_env()
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "migrations"
 
@@ -33,7 +33,7 @@ def _discover() -> list[Path]:
 def main() -> int:
     db_url = get_database_url()
     if not db_url:
-        print("database url is not set for current APP_ENV", file=sys.stderr)
+        print("DATABASE_URL is not set", file=sys.stderr)
         return 1
 
     engine = create_engine(db_url, future=True)

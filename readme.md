@@ -4,7 +4,7 @@
 
 ```bash
 cp .env.example .env
-# edit .env and fill in GEMINI_API_KEY (and update other values as needed)
+# edit .env values (DB URL, image base URL, keys)
 make dev
 ```
 
@@ -12,7 +12,12 @@ Once the stack is up, `GET http://localhost:8000/health` should return 200.
 
 ## Environment
 
-All environment variables the backend reads are listed in [`.env.example`](./.env.example). That file is the canonical reference — one variable per line, grouped by concern (runtime mode, database, Gemini, image content, preprocessing, CORS).
+Env selection is controlled only by `APP_ENV`:
+
+- `.env` is the default file (typically `APP_ENV=dev`).
+- when `APP_ENV=prod`, backend overlays `.env.prod` values.
+
+Use `.env.example` and `.env.prod.example` as templates. Both files use identical variable names.
 
 ## Common tasks
 

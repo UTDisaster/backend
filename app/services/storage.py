@@ -7,12 +7,12 @@ from pathlib import Path
 from typing import Protocol
 
 import httpx
-from dotenv import load_dotenv
 
 from app.config import get_app_env, get_image_content_base_url
+from app.env_loader import load_app_env
 from app.services.image_paths import build_image_url, normalize_relative_image_path
 
-load_dotenv()
+load_app_env()
 
 
 class ImageStore(Protocol):

@@ -4,7 +4,7 @@
 
 .env:
 	cp .env.example .env
-	@echo ">>> Created .env from .env.example. Fill in GEMINI_API_KEY and rerun 'make dev'."
+	@echo ">>> Created .env template. Fill .env values and rerun 'make dev'."
 	@false
 
 dev: .env

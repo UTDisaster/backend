@@ -41,11 +41,11 @@ If this not the first time running, use now:
 docker start utd-postgis
 ```
 
-Make sure your environment has the variable DATABASE_URL which corresponds to the new DB.
+Set APP_ENV and then provide standard variable names (no DEV_* variants).
 
 ```bash
-export DATABASE_URL='postgresql+psycopg://utd:utdpass@localhost:5433/utd_data'
 export APP_ENV='dev'
+export DATABASE_URL='postgresql+psycopg://utd:utdpass@localhost:5433/utd_data'
 export IMAGE_CONTENT_BASE_URL='http://127.0.0.1:8000/assets'
 ```
 
