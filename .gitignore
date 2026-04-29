@@ -34,12 +34,14 @@ log.txt
 .env
 .env.*
 !.env.example
+!.env.prod.example
 service_role.txt
 
 # VLM pipeline local artifacts
 data/
 data-example/
 *.jsonl
+assets/
 
 # OS-generated files
 .DS_Store # macOS
@@ -55,4 +57,3 @@ Pipfile.lock # recommended to include, but some choose to ignore
 
 # Specific to Jupyter notebooks if used
 .ipynb_checkpoints
-

@@ -4,7 +4,7 @@
 
 .env:
 	cp .env.example .env
-	@echo ">>> Created .env from .env.example. Fill in GEMINI_API_KEY and rerun 'make dev'."
+	@echo ">>> Created .env template. Fill .env values and rerun 'make dev'."
 	@false
 
 dev: .env
@@ -14,7 +14,10 @@ db:
 	docker compose up -d db
 
 seed:
-	python util/seed_minimal.py
+	@echo "No seed script is provided. Use preprocess-data load instead:"
+	@echo "  DATABASE_URL='postgresql+psycopg://utd:utdpass@127.0.0.1:5433/utd_data' \\"
+	@echo "  python util/preprocess-data.py --start-at load --stop-after load --input <path-to-parsed_data.json>"
+	@false
 
 test:
 	pytest

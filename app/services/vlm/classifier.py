@@ -7,11 +7,11 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Protocol
 
-from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError, ClientError, ServerError
 
+from app.env_loader import load_app_env
 from app.services.vlm.errors import (
     VLMFatalError,
     VLMParseError,
@@ -21,7 +21,7 @@ from app.services.vlm.parse import parse_response
 from app.services.vlm.prompt import PROMPTS, Prompt, PromptVersion
 from app.services.vlm.rate_limit import BackoffPolicy, TokenBucket
 
-load_dotenv()
+load_app_env()
 
 
 @dataclass(frozen=True)

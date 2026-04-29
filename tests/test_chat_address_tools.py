@@ -10,6 +10,8 @@ import pytest
 
 os.environ.setdefault("DATABASE_URL", "postgresql+psycopg://test:test@localhost:5432/test")
 os.environ.setdefault("GEMINI_API_KEY", "test-key")
+os.environ.setdefault("IMAGE_CONTENT_BASE_URL", "http://test/assets")
+os.environ.setdefault("APP_ENV", "dev")
 
 from app.services import gemini as gemini_mod
 from app.services.location_queries import (
