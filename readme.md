@@ -4,7 +4,7 @@
 
 ```bash
 cp .env.example .env
-# edit .env and fill in GEMINI_API_KEY and any other values you need
+# edit .env and fill in GEMINI_API_KEY (and update other values as needed)
 make dev
 ```
 
@@ -12,13 +12,12 @@ Once the stack is up, `GET http://localhost:8000/health` should return 200.
 
 ## Environment
 
-All environment variables the backend reads are listed in [`.env.example`](./.env.example). That file is the canonical reference — one variable per line, grouped by concern (database, Gemini, preprocessing, Supabase image storage, CORS).
+All environment variables the backend reads are listed in [`.env.example`](./.env.example). That file is the canonical reference — one variable per line, grouped by concern (runtime mode, database, Gemini, image content, preprocessing, CORS).
 
 ## Common tasks
 
 - `make dev` — build and run the full stack (api + db) via docker compose
 - `make db` — start only the Postgres/PostGIS container
-- `make seed` — run `util/seed_minimal.py`
 - `make test` — run pytest
 - `make eval` — run the VLM evaluation against `hurricane-florence`
 - `make lint` — run `ruff check .` and `black --check .`

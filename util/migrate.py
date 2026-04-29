@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
+from app.config import get_database_url
 
 load_dotenv()
 
@@ -31,9 +31,9 @@ def _discover() -> list[Path]:
 
 
 def main() -> int:
-    db_url = os.getenv("DATABASE_URL")
+    db_url = get_database_url()
     if not db_url:
-        print("DATABASE_URL is not set", file=sys.stderr)
+        print("database url is not set for current APP_ENV", file=sys.stderr)
         return 1
 
     engine = create_engine(db_url, future=True)

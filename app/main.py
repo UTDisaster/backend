@@ -10,9 +10,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
-from app.config import validate_env
+from app.config import get_image_content_base_url, validate_env
 from app.db import get_engine
 from app.routers.chat import router as chat_router
+from app.services.image_paths import build_image_url, normalize_relative_image_path
 
 validate_env()
 
@@ -106,26 +107,15 @@ def _normalize_bbox(
 
 
 def _build_image_url(request: Request, path: Optional[str]) -> Optional[str]:
+    del request
     if not path:
         return None
 
-    normalized_path = path.lstrip("/")
-    supabase_url = os.getenv("SUPABASE_URL", "").rstrip("/")
-    supabase_bucket = os.getenv("SUPABASE_IMAGES_BUCKET", "images").strip()
-    strip_prefix = os.getenv("SUPABASE_STRIP_PREFIX", "images/").strip().lstrip("/")
-    use_basename = os.getenv("SUPABASE_USE_BASENAME", "false").lower() == "true"
-
-    if strip_prefix and normalized_path.startswith(strip_prefix):
-        normalized_path = normalized_path[len(strip_prefix) :]
-        normalized_path = normalized_path.lstrip("/")
-
-    if use_basename:
-        normalized_path = Path(normalized_path).name
-
-    if supabase_url:
-        return f"{supabase_url}/storage/v1/object/public/{supabase_bucket}/{normalized_path}"
-
-    return str(request.url_for("assets", path=normalized_path))
+    base_url = get_image_content_base_url()
+    try:
+        return build_image_url(base_url, normalize_relative_image_path(path))
+    except ValueError:
+        return None
 
 
 @app.get("/locations")

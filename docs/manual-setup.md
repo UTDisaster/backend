@@ -45,6 +45,8 @@ Make sure your environment has the variable DATABASE_URL which corresponds to th
 
 ```bash
 export DATABASE_URL='postgresql+psycopg://utd:utdpass@localhost:5433/utd_data'
+export APP_ENV='dev'
+export IMAGE_CONTENT_BASE_URL='http://127.0.0.1:8000/assets'
 ```
 
 ## Preprocessing Pipeline

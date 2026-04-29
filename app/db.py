@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import os
 from functools import lru_cache
 from dotenv import load_dotenv 
 
 load_dotenv()
+from app.config import get_database_url
 
 from sqlalchemy import (
     BigInteger,
@@ -102,10 +102,10 @@ Index("ix_locations_classification", locations.c.classification)
 
 @lru_cache(maxsize=4)
 def get_engine(database_url: str | None = None) -> Engine:
-    db_url = database_url or os.getenv("DATABASE_URL")
+    db_url = database_url or get_database_url()
 
     if not db_url:
-        raise RuntimeError("DATABASE_URL is not set")
+        raise RuntimeError("database url is not set for current APP_ENV")
 
     # Pool connections to avoid exhausting max_clients on frequent requests
     return create_engine(

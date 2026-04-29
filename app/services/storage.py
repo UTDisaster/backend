@@ -9,6 +9,9 @@ from typing import Protocol
 import httpx
 from dotenv import load_dotenv
 
+from app.config import get_app_env, get_image_content_base_url
+from app.services.image_paths import build_image_url, normalize_relative_image_path
+
 load_dotenv()
 
 
@@ -37,45 +40,29 @@ class _LRU:
                 self._store.popitem(last=False)
 
 
-class SupabaseImageStore:
-    """Fetches pre/post PNG bytes from a Supabase public Storage bucket.
-
-    Env-driven defaults:
-      SUPABASE_URL, SUPABASE_IMAGES_BUCKET, SUPABASE_STRIP_PREFIX,
-      SUPABASE_USE_BASENAME, VLM_DATASET_DIR.
-
-    If VLM_DATASET_DIR is set and contains the file, the local copy wins.
-    """
+class ContentImageStore:
+    """Fetches pre/post image bytes from local data dir or image content base URL."""
 
     def __init__(
         self,
         *,
         base_url: str | None = None,
-        bucket: str | None = None,
-        strip_prefix: str | None = None,
-        use_basename: bool | None = None,
         local_dir: Path | str | None = None,
         cache_size: int = 2048,
         client: httpx.Client | None = None,
     ) -> None:
-        self._base_url = (base_url or os.getenv("SUPABASE_URL", "")).rstrip("/")
-        self._bucket = (bucket or os.getenv("SUPABASE_IMAGES_BUCKET", "images")).strip()
-        self._strip_prefix = (
-            strip_prefix
-            if strip_prefix is not None
-            else os.getenv("SUPABASE_STRIP_PREFIX", "images/")
-        ).strip().lstrip("/")
-        self._use_basename = (
-            use_basename
-            if use_basename is not None
-            else os.getenv("SUPABASE_USE_BASENAME", "false").lower() == "true"
-        )
+        self._base_url = (base_url or get_image_content_base_url()).rstrip("/")
+        app_env = get_app_env()
         local_env = os.getenv("VLM_DATASET_DIR")
-        self._local_dir = (
-            Path(local_dir).expanduser().resolve() if local_dir is not None
-            else Path(local_env).expanduser().resolve() if local_env
-            else None
-        )
+        parsed_data_dir = os.getenv("PARSED_DATA_DIR")
+        self._local_dir = None
+        if app_env == "dev":
+            self._local_dir = (
+                Path(local_dir).expanduser().resolve() if local_dir is not None
+                else Path(local_env).expanduser().resolve() if local_env
+                else Path(parsed_data_dir).expanduser().resolve() if parsed_data_dir
+                else None
+            )
         self._cache = _LRU(cache_size)
         self._client = client if client is not None else httpx.Client(
             timeout=30.0, follow_redirects=True
@@ -99,29 +86,26 @@ class SupabaseImageStore:
         response = self._client.get(url)
         if response.status_code != 200:
             raise FileNotFoundError(
-                f"Supabase fetch failed [{response.status_code}]: {url}"
+                f"Image fetch failed [{response.status_code}]: {url}"
             )
         data = response.content
         self._cache.put(raw_path, data)
         return data
 
-    def _normalize(self, raw_path: str) -> str:
-        path = raw_path.lstrip("/")
-        if self._strip_prefix and path.startswith(self._strip_prefix):
-            path = path[len(self._strip_prefix):].lstrip("/")
-        if self._use_basename:
-            path = Path(path).name
-        return path
-
     def _remote_url(self, raw_path: str) -> str:
-        if not self._base_url:
-            raise RuntimeError("SUPABASE_URL is not set")
-        return f"{self._base_url}/storage/v1/object/public/{self._bucket}/{self._normalize(raw_path)}"
+        try:
+            return build_image_url(self._base_url, normalize_relative_image_path(raw_path))
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
 
     def _local_path(self, raw_path: str) -> Path | None:
         if self._local_dir is None:
             return None
-        candidate = (self._local_dir / self._normalize(raw_path)).resolve()
+        try:
+            normalized = normalize_relative_image_path(raw_path)
+        except ValueError:
+            return None
+        candidate = (self._local_dir / normalized).resolve()
         try:
             candidate.relative_to(self._local_dir)
         except ValueError:

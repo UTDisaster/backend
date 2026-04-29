@@ -22,7 +22,7 @@ import sqlalchemy as sa
 
 from app.db import get_engine
 from app.services.cropping import crop_for_location, lnglat_ring_to_xy
-from app.services.storage import ImageStore, SupabaseImageStore
+from app.services.storage import ContentImageStore, ImageStore
 from app.services.vlm import (
     BackoffPolicy,
     GeminiVLMClassifier,
@@ -290,7 +290,7 @@ def run_vlm_step(
 ) -> VLMRunStats:
     engine = get_engine()
     owned_store = store is None
-    store = store or SupabaseImageStore()
+    store = store or ContentImageStore()
     classifier = classifier or GeminiVLMClassifier(
         model=model,
         prompt_version=prompt_version,
