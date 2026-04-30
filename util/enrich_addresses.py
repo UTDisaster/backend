@@ -86,7 +86,7 @@ def _parse_args() -> argparse.Namespace:
 SELECT_SQL = """
 SELECT id, ST_Y(centroid) AS lat, ST_X(centroid) AS lng
 FROM locations
-WHERE full_address IS NULL
+WHERE address_fetched_at IS NULL
 ORDER BY id
 LIMIT :limit
 """

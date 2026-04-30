@@ -71,7 +71,7 @@ def lookup_damage_at_address(
                MAX(similarity({target}, :q)) AS score
         FROM locations l
         LEFT JOIN chat.vlm_assessments a ON a.location_id = l.id
-        WHERE {target} %% :q
+        WHERE similarity({target}, :q) > 0.3
         GROUP BY l.street, l.city, l.county
         ORDER BY score DESC, total DESC
         LIMIT :limit
