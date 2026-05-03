@@ -51,7 +51,7 @@ _EFFECTIVE_LEVEL_SQL = """COALESCE(
 
 
 def lookup_damage_at_address(
-    conn: Connection, query: str, *, limit: int = 5
+    conn: Connection, query: str, *, limit: int = 5, disaster_id: str | None = None
 ) -> list[AddressMatch]:
     """Fuzzy-match an address/street string; aggregate damage per (street, city, county).
 
@@ -62,6 +62,13 @@ def lookup_damage_at_address(
     if len(q) < _MIN_QUERY_LEN:
         return []
     target = "l.full_address" if len(q) >= _LONG_QUERY_LEN else "l.street"
+    disaster_join = ""
+    disaster_filter = ""
+    params: dict[str, object] = {"q": q, "limit": limit}
+    if disaster_id:
+        disaster_join = "JOIN image_pairs ip ON ip.id = l.image_pair_id"
+        disaster_filter = "AND ip.disaster_id = :disaster_id"
+        params["disaster_id"] = disaster_id
     sql = text(f"""
         SELECT l.street AS street, l.city AS city, l.county AS county,
                COUNT(*) AS total,
@@ -70,13 +77,15 @@ def lookup_damage_at_address(
                AVG(ST_Y(l.centroid)) AS lat, AVG(ST_X(l.centroid)) AS lng,
                MAX(similarity({target}, :q)) AS score
         FROM locations l
+        {disaster_join}
         LEFT JOIN chat.vlm_assessments a ON a.location_id = l.id
         WHERE similarity({target}, :q) > 0.3
+          {disaster_filter}
         GROUP BY l.street, l.city, l.county
         ORDER BY score DESC, total DESC
         LIMIT :limit
     """)
-    rows = conn.execute(sql, {"q": q, "limit": limit}).mappings().all()
+    rows = conn.execute(sql, params).mappings().all()
     return [
         AddressMatch(
             street=r["street"], city=r["city"], county=r["county"],
@@ -88,22 +97,36 @@ def lookup_damage_at_address(
 
 
 def nearby_damage(
-    conn: Connection, lat: float, lng: float, *, radius_m: int = 200
+    conn: Connection,
+    lat: float,
+    lng: float,
+    *,
+    radius_m: int = 200,
+    disaster_id: str | None = None,
 ) -> DamageAggregate:
     """Aggregate damage counts within radius_m meters of (lat, lng). Radius clamped to [20, 5000]."""
     clamped = max(_RADIUS_MIN_M, min(_RADIUS_MAX_M, int(radius_m)))
+    disaster_join = ""
+    disaster_filter = ""
+    params: dict[str, object] = {"lat": lat, "lng": lng, "radius": clamped}
+    if disaster_id:
+        disaster_join = "JOIN image_pairs ip ON ip.id = l.image_pair_id"
+        disaster_filter = "AND ip.disaster_id = :disaster_id"
+        params["disaster_id"] = disaster_id
     sql = text(f"""
         SELECT {_EFFECTIVE_LEVEL_SQL} AS level, COUNT(*) AS n
         FROM locations l
+        {disaster_join}
         LEFT JOIN chat.vlm_assessments a ON a.location_id = l.id
         WHERE ST_DWithin(
             l.centroid::geography,
             ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)::geography,
             :radius
         )
+        {disaster_filter}
         GROUP BY 1
     """)
-    rows = conn.execute(sql, {"lat": lat, "lng": lng, "radius": clamped}).mappings().all()
+    rows = conn.execute(sql, params).mappings().all()
     buckets = {"none": 0, "minor": 0, "severe": 0, "destroyed": 0, "unknown": 0}
     for r in rows:
         key = r["level"] if r["level"] in buckets else "unknown"

@@ -69,7 +69,8 @@ TOOLS = [
         "name": "get_locations_by_damage",
         "description": (
             "Get a list of specific buildings/locations filtered by damage level. "
-            "Use when the user asks about specific houses, worst damaged areas, or wants to see locations."
+            "Use when the user asks about specific houses or wants to see locations by damage class. "
+            "Use get_damage_hotspots instead for worst or most-damaged areas."
         ),
         "parameters": {
             "type": "object",
@@ -89,6 +90,27 @@ TOOLS = [
             },
             "required": ["damage_level"]
         }
+    },
+    {
+        "name": "get_damage_hotspots",
+        "description": (
+            "Find disaster-scoped hotspot areas ranked by major-damage plus destroyed building counts. "
+            "Use when the user asks for the worst-hit, most damaged, or hardest-hit area."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "disaster_id": {
+                    "type": "string",
+                    "description": "Filter by disaster ID e.g. 'hurricane-florence'. Optional.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max number of hotspot areas to return. Default 5.",
+                },
+            },
+            "required": [],
+        },
     },
     {
         "name": "get_disaster_list",
@@ -141,7 +163,8 @@ TOOLS = [
         "name": "navigate_map",
         "description": (
             "Navigate the user's map view to a specific location. "
-            "Use when the user asks to see an area, go somewhere, or when showing them relevant damage."
+            "Use when the user asks to see an area, go somewhere, or when showing them relevant damage. "
+            "For most-damaged areas, call get_damage_hotspots first and navigate to one of its returned coordinates."
         ),
         "parameters": {
             "type": "object",
@@ -262,6 +285,38 @@ _CLASSIFICATION_ALIAS = {
     "severe": "severe",
 }
 
+_DAMAGE_LABELS = {
+    "none": "no visible damage",
+    "minor": "minor damage",
+    "severe": "major damage",
+    "destroyed": "destroyed",
+    "unknown": "unknown damage",
+}
+
+_DEFAULT_SCOPED_TOOLS = {
+    "get_damage_stats",
+    "get_locations_by_damage",
+    "get_damage_hotspots",
+    "lookup_damage_at_address",
+    "nearby_damage",
+    "navigate_map",
+}
+
+_HOTSPOT_MIN_CLUSTER_SIZE = 10
+
+_EFFECTIVE_DAMAGE_SQL = """COALESCE(
+    CASE a.damage_level
+        WHEN 'no-damage' THEN 'none'
+        WHEN 'minor-damage' THEN 'minor'
+        WHEN 'major-damage' THEN 'severe'
+        WHEN 'destroyed' THEN 'destroyed'
+        WHEN 'unknown' THEN 'unknown'
+        ELSE a.damage_level
+    END,
+    l.classification,
+    'unknown'
+)"""
+
 
 def _normalize_classification_filter(args: dict) -> dict:
     """Accept both canonical and short classification keys, emit short aliases."""
@@ -288,6 +343,131 @@ def _dominant_match(matches: list[dict]) -> dict | None:
     return None
 
 
+def _with_default_disaster(
+    tool_name: str, args: dict, default_disaster_id: str | None
+) -> dict:
+    scoped = dict(args)
+    if (
+        default_disaster_id
+        and tool_name in _DEFAULT_SCOPED_TOOLS
+        and not scoped.get("disaster_id")
+    ):
+        scoped["disaster_id"] = default_disaster_id
+    return scoped
+
+
+def _format_place(match: dict) -> str:
+    parts = [
+        str(match.get("street") or "").strip(),
+        str(match.get("city") or "").strip(),
+        str(match.get("county") or "").strip(),
+    ]
+    label = ", ".join(part for part in parts if part)
+    return label or "that area"
+
+
+def _count_phrase(count: int, label: str) -> str:
+    unit = "building" if count == 1 else "buildings"
+    return f"{count} {label} {unit}"
+
+
+def _summarize_damage_counts(counts: dict[str, int]) -> str:
+    total = sum(counts.values())
+    if total <= 0:
+        return "I couldn't find any assessed buildings for that query."
+    ordered = ["destroyed", "severe", "minor", "none", "unknown"]
+    details = [
+        _count_phrase(counts[level], _DAMAGE_LABELS[level])
+        for level in ordered
+        if counts.get(level, 0) > 0
+    ]
+    return f"I found {total} assessed buildings: {', '.join(details)}."
+
+
+def _counts_from_rows(rows: list[dict]) -> dict[str, int]:
+    counts = {level: 0 for level in _DAMAGE_LABELS}
+    for row in rows:
+        level = str(row.get("damage_level") or row.get("level") or "unknown")
+        key = _CLASSIFICATION_ALIAS.get(level, level)
+        if key not in counts:
+            key = "unknown"
+        counts[key] += int(row.get("count") or row.get("n") or 0)
+    return counts
+
+
+def _synthesize_reply_from_tool_results(
+    tool_results: list[dict], actions: list[dict]
+) -> str:
+    """Build a data-aware fallback when Gemini returns only tool calls."""
+    for item in reversed(tool_results):
+        name = item["name"]
+        data = item["result"]
+
+        if name == "get_damage_stats":
+            rows = data.get("result") if isinstance(data, dict) else None
+            if isinstance(rows, list):
+                return _summarize_damage_counts(_counts_from_rows(rows))
+
+        if name == "lookup_damage_at_address":
+            matches = data.get("matches") or []
+            if not matches:
+                return "I couldn't find damage records for that address or street."
+            top = matches[0]
+            place = _format_place(top)
+            counts = {
+                "destroyed": int(top.get("destroyed") or 0),
+                "severe": int(top.get("severe") or 0),
+            }
+            total = int(top.get("total") or 0)
+            detail = ", ".join(
+                _count_phrase(counts[level], _DAMAGE_LABELS[level])
+                for level in ("destroyed", "severe")
+                if counts[level] > 0
+            )
+            if detail:
+                return f"{place} has {total} assessed buildings, including {detail}."
+            return f"{place} has {total} assessed buildings with no major-damage or destroyed buildings found."
+
+        if name == "nearby_damage":
+            counts = {
+                level: int(data.get(level) or 0)
+                for level in ("none", "minor", "severe", "destroyed", "unknown")
+            }
+            return _summarize_damage_counts(counts)
+
+        if name == "get_damage_hotspots":
+            hotspots = data.get("hotspots") or []
+            if not hotspots:
+                return "I couldn't find a damaged-area hotspot for the selected disaster."
+            top = hotspots[0]
+            severe = int(top.get("severe") or 0)
+            destroyed = int(top.get("destroyed") or 0)
+            lat = float(top["lat"])
+            lng = float(top["lng"])
+            return (
+                f"The most damaged area is near {lat:.2f}, {lng:.2f}, with "
+                f"{severe} major-damage and {destroyed} destroyed buildings."
+            )
+
+        if name == "get_locations_by_damage":
+            rows = data.get("result") if isinstance(data, dict) else None
+            if isinstance(rows, list) and rows:
+                first = rows[0]
+                level = str(first.get("damage_level") or "matching")
+                lat = float(first["lat"])
+                lng = float(first["lng"])
+                return (
+                    f"I found {len(rows)} {level} locations; the first is near "
+                    f"{lat:.2f}, {lng:.2f}."
+                )
+            return "I couldn't find locations matching that damage class."
+
+        if name == "navigate_map" and data.get("status") == "out_of_scope":
+            return "I can only move the map to locations inside the selected disaster area."
+
+    return _synthesize_reply_from_actions(actions)
+
+
 def _synthesize_reply_from_actions(actions: list[dict]) -> str:
     """Build a short natural-language summary when Gemini returns no text."""
     if not actions:
@@ -311,27 +491,52 @@ def _synthesize_reply_from_actions(actions: list[dict]) -> str:
     return " ".join(summaries) if summaries else "Done."
 
 
-def _run_tool(tool_name: str, args: dict) -> str:
+def _point_within_disaster_bounds(
+    conn, lat: float, lng: float, disaster_id: str | None
+) -> bool:
+    if not disaster_id:
+        return True
+    row = (
+        conn.execute(
+            text("""
+                SELECT
+                    MIN(ST_Y(l.centroid)) AS min_lat,
+                    MAX(ST_Y(l.centroid)) AS max_lat,
+                    MIN(ST_X(l.centroid)) AS min_lng,
+                    MAX(ST_X(l.centroid)) AS max_lng
+                FROM locations l
+                JOIN image_pairs ip ON ip.id = l.image_pair_id
+                WHERE ip.disaster_id = :disaster_id
+            """),
+            {"disaster_id": disaster_id},
+        )
+        .mappings()
+        .all()
+    )
+    if not row:
+        return False
+    bounds = row[0]
+    if bounds["min_lat"] is None or bounds["min_lng"] is None:
+        return False
+    return (
+        float(bounds["min_lat"]) <= lat <= float(bounds["max_lat"])
+        and float(bounds["min_lng"]) <= lng <= float(bounds["max_lng"])
+    )
+
+
+def _run_tool(
+    tool_name: str, args: dict, *, default_disaster_id: str | None = None
+) -> str:
     """Executes the requested tool and returns a JSON string result."""
     engine = get_engine()
+    args = _with_default_disaster(tool_name, args, default_disaster_id)
 
     with engine.connect() as conn:
 
         if tool_name == "get_damage_stats":
-            query = """
+            query = f"""
                 SELECT
-                    COALESCE(
-                        CASE a.damage_level
-                            WHEN 'no-damage' THEN 'none'
-                            WHEN 'minor-damage' THEN 'minor'
-                            WHEN 'major-damage' THEN 'severe'
-                            WHEN 'destroyed' THEN 'destroyed'
-                            WHEN 'unknown' THEN 'unknown'
-                            ELSE a.damage_level
-                        END,
-                        l.classification,
-                        'unknown'
-                    ) AS damage_level,
+                    {_EFFECTIVE_DAMAGE_SQL} AS damage_level,
                     COUNT(*) AS count
                 FROM locations l
                 JOIN image_pairs ip ON ip.id = l.image_pair_id
@@ -345,43 +550,71 @@ def _run_tool(tool_name: str, args: dict) -> str:
             rows = conn.execute(text(query), params).mappings().all()
             return json.dumps([dict(r) for r in rows])
 
+        elif tool_name == "get_damage_hotspots":
+            query = f"""
+                SELECT
+                    round(ST_Y(l.centroid)::numeric, 2) AS lat,
+                    round(ST_X(l.centroid)::numeric, 2) AS lng,
+                    COUNT(*) FILTER (WHERE {_EFFECTIVE_DAMAGE_SQL} = 'severe') AS severe,
+                    COUNT(*) FILTER (WHERE {_EFFECTIVE_DAMAGE_SQL} = 'destroyed') AS destroyed,
+                    COUNT(*) AS total
+                FROM locations l
+                JOIN image_pairs ip ON ip.id = l.image_pair_id
+                LEFT JOIN chat.vlm_assessments a ON a.location_id = l.id
+                WHERE l.centroid IS NOT NULL
+            """
+            params: dict = {"limit": min(max(int(args.get("limit", 5)), 1), 20)}
+            if args.get("disaster_id"):
+                query += " AND ip.disaster_id = :disaster_id"
+                params["disaster_id"] = args["disaster_id"]
+            query += f"""
+                GROUP BY lat, lng
+                HAVING (
+                    COUNT(*) FILTER (WHERE {_EFFECTIVE_DAMAGE_SQL} = 'severe')
+                    + COUNT(*) FILTER (WHERE {_EFFECTIVE_DAMAGE_SQL} = 'destroyed')
+                ) > 0
+                AND COUNT(*) >= {_HOTSPOT_MIN_CLUSTER_SIZE}
+                ORDER BY
+                    (
+                        COUNT(*) FILTER (WHERE {_EFFECTIVE_DAMAGE_SQL} = 'severe')
+                        + COUNT(*) FILTER (WHERE {_EFFECTIVE_DAMAGE_SQL} = 'destroyed')
+                    ) DESC,
+                    COUNT(*) FILTER (WHERE {_EFFECTIVE_DAMAGE_SQL} = 'destroyed') DESC
+                LIMIT :limit
+            """
+            rows = conn.execute(text(query), params).mappings().all()
+            hotspots = [
+                {
+                    "lat": float(row["lat"]),
+                    "lng": float(row["lng"]),
+                    "severe": int(row["severe"] or 0),
+                    "destroyed": int(row["destroyed"] or 0),
+                    "total": int(row["total"] or 0),
+                }
+                for row in rows
+            ]
+            return json.dumps({"hotspots": hotspots})
+
         elif tool_name == "get_locations_by_damage":
-            query = """
+            query = f"""
                 SELECT
                     l.id AS location_id,
                     l.location_uid,
                     l.image_pair_id,
                     ip.disaster_id,
-                    COALESCE(
-                        CASE a.damage_level
-                            WHEN 'no-damage' THEN 'none'
-                            WHEN 'minor-damage' THEN 'minor'
-                            WHEN 'major-damage' THEN 'severe'
-                            WHEN 'destroyed' THEN 'destroyed'
-                            WHEN 'unknown' THEN 'unknown'
-                            ELSE a.damage_level
-                        END,
-                        l.classification
-                    ) AS damage_level,
+                    {_EFFECTIVE_DAMAGE_SQL} AS damage_level,
                     a.description,
                     ST_Y(l.centroid) AS lat,
                     ST_X(l.centroid) AS lng
                 FROM locations l
                 JOIN image_pairs ip ON ip.id = l.image_pair_id
                 LEFT JOIN chat.vlm_assessments a ON a.location_id = l.id
-                WHERE COALESCE(
-                    CASE a.damage_level
-                        WHEN 'no-damage' THEN 'none'
-                        WHEN 'minor-damage' THEN 'minor'
-                        WHEN 'major-damage' THEN 'severe'
-                        WHEN 'destroyed' THEN 'destroyed'
-                        WHEN 'unknown' THEN 'unknown'
-                        ELSE a.damage_level
-                    END,
-                    l.classification
-                ) = :damage_level
+                WHERE {_EFFECTIVE_DAMAGE_SQL} = :damage_level
             """
-            params: dict = {"damage_level": args["damage_level"]}
+            damage_level = _CLASSIFICATION_ALIAS.get(
+                str(args["damage_level"]), str(args["damage_level"])
+            )
+            params: dict = {"damage_level": damage_level}
             if args.get("disaster_id"):
                 query += " AND ip.disaster_id = :disaster_id"
                 params["disaster_id"] = args["disaster_id"]
@@ -426,21 +659,10 @@ def _run_tool(tool_name: str, args: dict) -> str:
 
         elif tool_name == "compare_disasters":
             rows = conn.execute(
-                text("""
+                text(f"""
                     SELECT
                         ip.disaster_id,
-                        COALESCE(
-                        CASE a.damage_level
-                            WHEN 'no-damage' THEN 'none'
-                            WHEN 'minor-damage' THEN 'minor'
-                            WHEN 'major-damage' THEN 'severe'
-                            WHEN 'destroyed' THEN 'destroyed'
-                            WHEN 'unknown' THEN 'unknown'
-                            ELSE a.damage_level
-                        END,
-                        l.classification,
-                        'unknown'
-                    ) AS damage_level,
+                        {_EFFECTIVE_DAMAGE_SQL} AS damage_level,
                         COUNT(*) AS count
                     FROM locations l
                     JOIN image_pairs ip ON ip.id = l.image_pair_id
@@ -454,9 +676,17 @@ def _run_tool(tool_name: str, args: dict) -> str:
             return json.dumps([dict(r) for r in rows])
 
         elif tool_name == "navigate_map":
-            lat = args["lat"]
-            lng = args["lng"]
+            lat = float(args["lat"])
+            lng = float(args["lng"])
             zoom = args.get("zoom", 17)
+            disaster_id = args.get("disaster_id")
+            if not _point_within_disaster_bounds(conn, lat, lng, disaster_id):
+                return json.dumps({
+                    "status": "out_of_scope",
+                    "lat": lat,
+                    "lng": lng,
+                    "disaster_id": disaster_id,
+                })
             return json.dumps({
                 "status": "navigating",
                 "lat": lat,
@@ -478,7 +708,9 @@ def _run_tool(tool_name: str, args: dict) -> str:
 
         elif tool_name == "lookup_damage_at_address":
             query = str(args.get("query") or "")
-            matches = lookup_damage_at_address(conn, query)
+            matches = lookup_damage_at_address(
+                conn, query, disaster_id=args.get("disaster_id")
+            )
             return json.dumps(
                 {
                     "matches": [
@@ -507,7 +739,9 @@ def _run_tool(tool_name: str, args: dict) -> str:
             if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lng <= 180.0):
                 return json.dumps({"error": "lat/lng out of valid geographic range"})
             radius_m = int(args.get("radius_m", 200))
-            agg = nearby_damage(conn, lat, lng, radius_m=radius_m)
+            agg = nearby_damage(
+                conn, lat, lng, radius_m=radius_m, disaster_id=args.get("disaster_id")
+            )
             return json.dumps(
                 {
                     "none": agg.none,
@@ -535,7 +769,9 @@ Rules:
 - When adjusting overlays or filters, just confirm what changed.
 - Only respond to queries about disaster assessment, disaster information, hurricane facts, map navigation, overlays, filters, building damage data, and damage at a specific address, street, house, neighborhood, or block.
 - For unrelated questions, say: "I can only help with disaster assessment and map navigation."
-- To navigate to damaged areas: first call get_locations_by_damage to get coordinates, then call navigate_map with those lat/lng values.
+- To find or navigate to the most damaged/worst-hit areas, call get_damage_hotspots. If the user asks to go there, call navigate_map with a hotspot coordinate.
+- To navigate to a specific damaged building class, first call get_locations_by_damage to get coordinates, then call navigate_map with those lat/lng values.
+- Use the selected disaster context when present; do not answer from another disaster unless the user explicitly asks for it.
 - For address/street/house/neighborhood/block queries, call lookup_damage_at_address with the user's query. For "what's damaged near here" or a coordinate, call nearby_damage. If no matches come back, say so briefly.
 
 Knowledge:
@@ -554,18 +790,29 @@ def chat(
     user_message: str,
     history: list[dict] | None = None,
     viewport: dict | None = None,
+    disaster_id: str | None = None,
+    disaster_name: str | None = None,
 ) -> tuple[str, list[dict], list[dict]]:
     history = history or []
     actions: list[dict] = []
+    tool_results: list[dict] = []
 
-    # Prepend viewport context so Gemini knows what area the user sees
+    # Prepend UI context so Gemini knows what area/disaster the user means.
     effective_message = user_message
+    context_lines: list[str] = []
+    if disaster_id:
+        context = f"[Selected disaster: {disaster_id}"
+        if disaster_name:
+            context += f" ({disaster_name})"
+        context += "]"
+        context_lines.append(context)
     if viewport:
-        effective_message = (
+        context_lines.append(
             f"[User is viewing: lat {viewport['minLat']:.2f}-{viewport['maxLat']:.2f}, "
-            f"lng {viewport['minLng']:.2f} to {viewport['maxLng']:.2f}]\n"
-            + user_message
+            f"lng {viewport['minLng']:.2f} to {viewport['maxLng']:.2f}]"
         )
+    if context_lines:
+        effective_message = "\n".join(context_lines) + "\n" + user_message
 
     # Build contents from history + new message
     contents = []
@@ -641,35 +888,38 @@ def chat(
         for fc in function_calls:
             tool_name = fc.name
             fc_args = dict(fc.args) if fc.args else {}
+            scoped_args = _with_default_disaster(tool_name, fc_args, disaster_id)
 
-            # Collect navigate_map calls as frontend actions (no DB needed)
-            if tool_name == "navigate_map":
-                lat = fc_args.get("lat")
-                lng = fc_args.get("lng")
-                zoom = fc_args.get("zoom", 17)
-                if lat is not None and lng is not None:
-                    actions.append({
-                        "type": "flyTo",
-                        "lat": float(lat),
-                        "lng": float(lng),
-                        "zoom": int(zoom),
-                    })
-            elif tool_name == "set_overlay_opacity":
-                clamped = max(0.0, min(1.0, float(fc_args["opacity"])))
-                actions.append({"type": "setOpacity", "value": clamped})
-            elif tool_name == "set_overlay_mode":
-                mode = fc_args.get("mode")
-                if mode in ("pre", "post", "none"):
-                    actions.append({"type": "setOverlayMode", "mode": mode})
-            elif tool_name == "set_classification_filter":
-                sanitized = _normalize_classification_filter(fc_args)
-                if sanitized:
-                    actions.append({"type": "setFilters", **sanitized})
-
-            result_str = _run_tool(tool_name, fc_args)
+            result_str = _run_tool(
+                tool_name,
+                scoped_args,
+                default_disaster_id=disaster_id,
+            )
             result_data = json.loads(result_str)
             if not isinstance(result_data, dict):
                 result_data = {"result": result_data}
+            tool_results.append(
+                {"name": tool_name, "args": scoped_args, "result": result_data}
+            )
+
+            if tool_name == "navigate_map" and result_data.get("status") == "navigating":
+                actions.append({
+                    "type": "flyTo",
+                    "lat": float(result_data["lat"]),
+                    "lng": float(result_data["lng"]),
+                    "zoom": int(result_data.get("zoom", 17)),
+                })
+            elif tool_name == "set_overlay_opacity" and result_data.get("status") == "ok":
+                actions.append({
+                    "type": "setOpacity",
+                    "value": float(result_data["opacity"]),
+                })
+            elif tool_name == "set_overlay_mode" and result_data.get("status") == "ok":
+                actions.append({"type": "setOverlayMode", "mode": result_data["mode"]})
+            elif tool_name == "set_classification_filter" and result_data.get("status") == "ok":
+                filters = result_data.get("filters") or {}
+                if filters:
+                    actions.append({"type": "setFilters", **filters})
 
             # Synthetic flyTo when an address lookup resolves to a single or
             # clearly dominant match — let the map follow the answer.
@@ -682,6 +932,16 @@ def chat(
                         "lat": float(top["lat"]),
                         "lng": float(top["lng"]),
                         "zoom": 17,
+                    })
+            elif tool_name == "get_damage_hotspots":
+                hotspots = result_data.get("hotspots") or []
+                if hotspots:
+                    top = hotspots[0]
+                    actions.append({
+                        "type": "flyTo",
+                        "lat": float(top["lat"]),
+                        "lng": float(top["lng"]),
+                        "zoom": 15,
                     })
 
             fn_response_parts.append(
@@ -703,11 +963,11 @@ def chat(
         for part in (response.candidates[0].content.parts or []):
             if hasattr(part, "text") and part.text:
                 reply += part.text
-    if not reply:
+    if not reply or (tool_results and reply.strip().lower() in {"done", "done."}):
         # Gemini sometimes returns tool calls with no text summary.
         # Synthesize a reply from the actions so the user always sees
         # a meaningful response, not a sterile fallback.
-        reply = _synthesize_reply_from_actions(actions)
+        reply = _synthesize_reply_from_tool_results(tool_results, actions)
 
     updated_history = history + [
         {"role": "user", "parts": [user_message]},
