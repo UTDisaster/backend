@@ -30,6 +30,8 @@ class ChatRequest(BaseModel):
     message:        str
     conversation_id: Optional[int] = None   # None = start new conversation
     viewport:       Optional[ViewportBounds] = None
+    disaster_id:    Optional[str] = None
+    disaster_name:  Optional[str] = None
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -126,6 +128,8 @@ def send_message(req: ChatRequest) -> dict:
                 user_message=req.message,
                 history=history,
                 viewport=viewport_dict,
+                disaster_id=req.disaster_id,
+                disaster_name=req.disaster_name,
             )
         except ChatBackendUnavailableError as exc:
             logger.warning("Chat unavailable: status=%s", exc.status_code)

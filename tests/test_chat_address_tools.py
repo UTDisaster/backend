@@ -14,6 +14,7 @@ os.environ.setdefault("IMAGE_CONTENT_BASE_URL", "http://test/assets")
 os.environ.setdefault("APP_ENV", "dev")
 
 from app.services import gemini as gemini_mod
+from app.routers import chat as chat_router
 from app.services.location_queries import (
     AddressMatch,
     DamageAggregate,
@@ -29,6 +30,10 @@ class _FakeResult:
     def __init__(self, rows: list[dict[str, Any]]) -> None: self._rows = rows
     def mappings(self) -> "_FakeResult": return self
     def all(self) -> list[dict[str, Any]]: return self._rows
+    def one_or_none(self) -> dict[str, Any] | None: return self._rows[0] if self._rows else None
+    def scalar(self) -> Any: return self._rows[0]["scalar"] if self._rows else None
+    def scalar_one(self) -> Any: return self.scalar()
+    def scalar_one_or_none(self) -> Any: return self.scalar()
 
 
 class _FakeConn:
@@ -45,6 +50,10 @@ class _FakeEngine:
 
     @contextmanager
     def connect(self) -> Iterator[_FakeConn]:
+        yield self._conn
+
+    @contextmanager
+    def begin(self) -> Iterator[_FakeConn]:
         yield self._conn
 
 
@@ -83,6 +92,12 @@ def test_lookup_short_query_returns_empty_and_skips_db() -> None:
     assert conn.calls == []
 
 
+def test_lookup_can_scope_to_disaster() -> None:
+    conn = _FakeConn([_row(score=0.95)])
+    lookup_damage_at_address(conn, "Ocean Blvd", disaster_id="hurricane-florence")
+    assert conn.calls[0]["disaster_id"] == "hurricane-florence"
+
+
 # ── nearby_damage ────────────────────────────────────────────────────
 
 
@@ -118,6 +133,12 @@ def test_nearby_damage_radius_clamped_down() -> None:
     assert conn.calls[0]["radius"] == 5000
 
 
+def test_nearby_damage_can_scope_to_disaster() -> None:
+    conn = _FakeConn([])
+    nearby_damage(conn, lat=33.69, lng=-78.89, disaster_id="hurricane-florence")
+    assert conn.calls[0]["disaster_id"] == "hurricane-florence"
+
+
 # ── gemini._run_tool wiring ──────────────────────────────────────────
 
 
@@ -139,6 +160,34 @@ def test_run_tool_nearby_damage_returns_aggregate() -> None:
             "nearby_damage", {"lat": 33.69, "lng": -78.89, "radius_m": 300}
         ))
     assert payload == {"none": 0, "minor": 0, "severe": 4, "destroyed": 2, "unknown": 0}
+
+
+def test_run_tool_damage_stats_defaults_to_selected_disaster() -> None:
+    conn = _FakeConn([{"damage_level": "destroyed", "count": 81}])
+    engine = _FakeEngine(conn)
+    with patch.object(gemini_mod, "get_engine", return_value=engine):
+        payload = json.loads(gemini_mod._run_tool(
+            "get_damage_stats", {}, default_disaster_id="hurricane-florence"
+        ))
+    assert payload == [{"damage_level": "destroyed", "count": 81}]
+    assert conn.calls[0]["disaster_id"] == "hurricane-florence"
+
+
+def test_run_tool_hotspots_returns_sorted_shape_and_scope() -> None:
+    conn = _FakeConn([
+        {"lat": 33.62, "lng": -79.05, "severe": 12, "destroyed": 4, "total": 30}
+    ])
+    engine = _FakeEngine(conn)
+    with patch.object(gemini_mod, "get_engine", return_value=engine):
+        payload = json.loads(gemini_mod._run_tool(
+            "get_damage_hotspots", {}, default_disaster_id="hurricane-florence"
+        ))
+    assert payload == {
+        "hotspots": [
+            {"lat": 33.62, "lng": -79.05, "severe": 12, "destroyed": 4, "total": 30}
+        ]
+    }
+    assert conn.calls[0]["disaster_id"] == "hurricane-florence"
 
 
 # ── _dominant_match helper ───────────────────────────────────────────
@@ -178,14 +227,21 @@ class _Client:
     def generate_content(self, **_kw: Any) -> _Resp: return self._r.pop(0)
 
 
-def _run_chat(tool_args: dict[str, Any], rows: list[dict[str, Any]]) -> tuple[str, list[dict]]:
-    call = _P(fc=_FC("lookup_damage_at_address", tool_args))
-    reply = _P(text="done.")
-    client = _Client([_Resp([call]), _Resp([reply])])
+def _run_chat(
+    tool_args: dict[str, Any],
+    rows: list[dict[str, Any]],
+    *,
+    final_text: str | None = "done.",
+    tool_name: str = "lookup_damage_at_address",
+    disaster_id: str | None = None,
+) -> tuple[str, list[dict]]:
+    call = _P(fc=_FC(tool_name, tool_args))
+    final_parts = [] if final_text is None else [_P(text=final_text)]
+    client = _Client([_Resp([call]), _Resp(final_parts)])
     engine = _FakeEngine(_FakeConn(rows))
     with patch.object(gemini_mod, "_get_client", return_value=client), \
          patch.object(gemini_mod, "get_engine", return_value=engine):
-        r, _h, actions = gemini_mod.chat("damage?")
+        r, _h, actions = gemini_mod.chat("damage?", disaster_id=disaster_id)
     return r, actions
 
 
@@ -204,3 +260,75 @@ def test_chat_appends_flyto_for_single_address_match() -> None:
 def test_chat_no_flyto_when_no_matches() -> None:
     _reply, actions = _run_chat({"query": "Nonexistent Rd"}, [])
     assert not any(a.get("type") == "flyTo" for a in actions)
+
+
+def test_chat_synthesizes_address_summary_when_model_returns_no_text() -> None:
+    reply, _actions = _run_chat(
+        {"query": "Ocean Blvd"},
+        [_row(score=0.95, lat=33.69, lng=-78.89)],
+        final_text=None,
+    )
+    assert reply != "Done."
+    assert "Ocean Blvd" in reply
+    assert "12 assessed buildings" in reply
+
+
+def test_chat_synthesizes_no_match_message_when_address_not_found() -> None:
+    reply, actions = _run_chat(
+        {"query": "Accord Street"},
+        [],
+        final_text=None,
+    )
+    assert "couldn't find damage records" in reply
+    assert not actions
+
+
+def test_chat_does_not_fly_to_out_of_scope_navigation() -> None:
+    reply, actions = _run_chat(
+        {"lat": 0.0, "lng": 0.0, "zoom": 17},
+        [{
+            "min_lat": 33.0,
+            "max_lat": 35.5,
+            "min_lng": -80.0,
+            "max_lng": -77.0,
+        }],
+        final_text=None,
+        tool_name="navigate_map",
+        disaster_id="hurricane-florence",
+    )
+    assert "selected disaster area" in reply
+    assert not any(a.get("type") == "flyTo" for a in actions)
+
+
+def test_chat_request_forwards_disaster_context_and_history() -> None:
+    class _RouterConn:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        def execute(self, statement: Any, params: dict[str, Any] | None = None) -> _FakeResult:
+            sql = str(statement)
+            self.calls.append(dict(params or {}))
+            if "INSERT INTO chat.conversations" in sql:
+                return _FakeResult([{"scalar": 42}])
+            if "SELECT role, content FROM chat.messages" in sql:
+                return _FakeResult([{"role": "user", "content": "previous question"}])
+            if "SELECT COALESCE(MAX(turn_index)" in sql:
+                return _FakeResult([{"scalar": 1}])
+            return _FakeResult([])
+
+    conn = _RouterConn()
+    engine = _FakeEngine(conn)  # type: ignore[arg-type]
+    req = chat_router.ChatRequest(
+        message="tell me more",
+        disaster_id="hurricane-florence",
+        disaster_name="Hurricane Florence",
+    )
+    with patch.object(chat_router, "get_engine", return_value=engine), \
+         patch.object(chat_router, "gemini_chat", return_value=("reply", [], [])) as mocked:
+        response = chat_router.send_message(req)
+
+    assert response["conversation_id"] == 42
+    kwargs = mocked.call_args.kwargs
+    assert kwargs["disaster_id"] == "hurricane-florence"
+    assert kwargs["disaster_name"] == "Hurricane Florence"
+    assert kwargs["history"] == [{"role": "user", "parts": ["previous question"]}]
