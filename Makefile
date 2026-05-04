@@ -1,6 +1,6 @@
 # Backend dev commands. Run `make dev` after copying .env.example to .env.
 
-.PHONY: dev db seed test eval lint migrate
+.PHONY: dev db seed test eval lint migrate enrich export-address-map
 
 .env:
 	cp .env.example .env
@@ -29,4 +29,10 @@ lint:
 	ruff check . && black --check .
 
 migrate:
-	python util/migrate.py
+	python -m util.migrate
+
+enrich:
+	python -m util.enrich_addresses --limit 1000
+
+export-address-map:
+	python -m util.export_address_map --pretty

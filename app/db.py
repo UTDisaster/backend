@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import os
 from app.env_loader import load_app_env
 from app.config import get_database_url
 
@@ -19,6 +20,7 @@ from sqlalchemy import (
     create_engine,
 )
 from sqlalchemy.engine import Engine
+from sqlalchemy.pool import NullPool
 from sqlalchemy.types import UserDefinedType
 
 
@@ -106,6 +108,19 @@ def get_engine(database_url: str | None = None) -> Engine:
 
     if not db_url:
         raise RuntimeError("DATABASE_URL is not set")
+
+    app_env = (os.getenv("APP_ENV", "dev") or "dev").strip().lower()
+    is_vercel = bool((os.getenv("VERCEL", "") or "").strip())
+    use_null_pool = app_env == "prod" or is_vercel
+
+    if use_null_pool:
+        # In serverless/prod, avoid holding pooled sessions per runtime instance.
+        # This prevents Supabase session/client exhaustion under bursty concurrency.
+        return create_engine(
+            db_url,
+            future=True,
+            poolclass=NullPool,
+        )
 
     # Pool connections to avoid exhausting max_clients on frequent requests
     return create_engine(
