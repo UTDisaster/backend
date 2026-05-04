@@ -152,17 +152,14 @@ async def get_locations(
             l.image_pair_id,
             l.feature_type,
             l.classification,
-            COALESCE(
-                CASE a.damage_level
-                    WHEN 'no-damage' THEN 'none'
-                    WHEN 'minor-damage' THEN 'minor'
-                    WHEN 'major-damage' THEN 'severe'
-                    WHEN 'destroyed' THEN 'destroyed'
-                    WHEN 'unknown' THEN 'unknown'
-                    ELSE a.damage_level
-                END,
-                l.classification
-            ) AS damage_level,
+            CASE a.damage_level
+                WHEN 'no-damage' THEN 'none'
+                WHEN 'minor-damage' THEN 'minor'
+                WHEN 'major-damage' THEN 'severe'
+                WHEN 'destroyed' THEN 'destroyed'
+                WHEN 'unknown' THEN 'unknown'
+                ELSE a.damage_level
+            END AS damage_level,
             a.confidence AS vlm_confidence,
             a.description AS vlm_description,
             ip.disaster_id,
