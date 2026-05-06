@@ -1,8 +1,8 @@
 """Fill missing street names via Nominatim (OpenStreetMap) reverse geocoding.
 
 Usage:
-    python util/enrich_streets_nominatim.py --limit 100
-    python util/enrich_streets_nominatim.py --limit 5 --dry-run
+    python -m util.enrich_streets_nominatim --limit 100
+    python -m util.enrich_streets_nominatim --limit 5 --dry-run
 """
 
 from __future__ import annotations
@@ -11,8 +11,6 @@ import argparse
 import sys
 import time
 from typing import Optional
-
-sys.path.insert(0, ".")
 
 import httpx
 from sqlalchemy import text
@@ -61,7 +59,6 @@ def reverse_geocode_nominatim(
     if not road:
         return None
 
-    city = address.get("city") or address.get("town") or address.get("village")
     display_name = payload.get("display_name")
 
     return {"street": road, "full_address": display_name}

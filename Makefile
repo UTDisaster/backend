@@ -35,7 +35,7 @@ enrich:
 	python -m util.enrich_addresses --limit 1000
 
 enrich-streets:
-	python util/enrich_streets_nominatim.py --limit 500
+	python -m util.enrich_streets_nominatim --limit 500
 
 export-address-map:
 	python -m util.export_address_map --pretty
