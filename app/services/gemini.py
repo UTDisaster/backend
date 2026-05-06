@@ -231,6 +231,33 @@ TOOLS = [
         }
     },
     {
+        "name": "get_damage_by_area",
+        "description": (
+            "Get aggregate damage level counts for a geographic area (city, county, or street). "
+            "Use when the user asks about overall/average/total damage in a city, county, town, or street. "
+            "Examples: 'how bad is Pender County?', 'damage in Burgaw', 'what's the damage on Main St?'"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "area_type": {
+                    "type": "string",
+                    "enum": ["city", "county", "street"],
+                    "description": "The type of geographic area to aggregate by.",
+                },
+                "area_name": {
+                    "type": "string",
+                    "description": "The name of the area to search for (e.g. 'Burgaw', 'Pender', 'Main St').",
+                },
+                "disaster_id": {
+                    "type": "string",
+                    "description": "Filter by disaster ID e.g. 'hurricane-florence'. Optional.",
+                },
+            },
+            "required": ["area_type", "area_name"],
+        },
+    },
+    {
         "name": "lookup_damage_at_address",
         "description": (
             "Fuzzy-match an address, street name, house, or neighborhood/block string "
@@ -297,6 +324,7 @@ _DEFAULT_SCOPED_TOOLS = {
     "get_damage_stats",
     "get_locations_by_damage",
     "get_damage_hotspots",
+    "get_damage_by_area",
     "lookup_damage_at_address",
     "nearby_damage",
     "navigate_map",
@@ -407,6 +435,24 @@ def _synthesize_reply_from_tool_results(
             rows = data.get("result") if isinstance(data, dict) else None
             if isinstance(rows, list):
                 return _summarize_damage_counts(_counts_from_rows(rows))
+
+        if name == "get_damage_by_area":
+            rows = data.get("result") if isinstance(data, dict) else None
+            area_name = data.get("area_name") or "that area"
+            area_type = data.get("area_type") or "area"
+            if isinstance(rows, list) and rows:
+                counts = _counts_from_rows(rows)
+                total = sum(counts.values())
+                if total <= 0:
+                    return f"I couldn't find any assessed buildings in {area_name}."
+                ordered = ["destroyed", "severe", "minor", "none", "unknown"]
+                details = [
+                    _count_phrase(counts[level], _DAMAGE_LABELS[level])
+                    for level in ordered
+                    if counts.get(level, 0) > 0
+                ]
+                return f"In {area_name} ({area_type}), I found {total} assessed buildings: {', '.join(details)}."
+            return f"I couldn't find any assessed buildings in {area_name}."
 
         if name == "lookup_damage_at_address":
             matches = data.get("matches") or []
@@ -706,6 +752,32 @@ def _run_tool(
             sanitized = _normalize_classification_filter(args)
             return json.dumps({"status": "ok", "filters": sanitized})
 
+        elif tool_name == "get_damage_by_area":
+            area_type = str(args.get("area_type") or "city")
+            area_name = str(args.get("area_name") or "")
+            column_map = {"city": "l.city", "county": "l.county", "street": "l.street"}
+            column = column_map.get(area_type, "l.city")
+            query = f"""
+                SELECT
+                    {_EFFECTIVE_DAMAGE_SQL} AS damage_level,
+                    COUNT(*) AS count
+                FROM locations l
+                JOIN image_pairs ip ON ip.id = l.image_pair_id
+                LEFT JOIN chat.vlm_assessments a ON a.location_id = l.id
+                WHERE {column} ILIKE :area_pattern
+            """
+            params: dict = {"area_pattern": f"%{area_name}%"}
+            if args.get("disaster_id"):
+                query += " AND ip.disaster_id = :disaster_id"
+                params["disaster_id"] = args["disaster_id"]
+            query += " GROUP BY 1 ORDER BY count DESC"
+            rows = conn.execute(text(query), params).mappings().all()
+            return json.dumps({
+                "area_type": area_type,
+                "area_name": area_name,
+                "result": [dict(r) for r in rows],
+            })
+
         elif tool_name == "lookup_damage_at_address":
             query = str(args.get("query") or "")
             matches = lookup_damage_at_address(
@@ -772,6 +844,7 @@ Rules:
 - To find or navigate to the most damaged/worst-hit areas, call get_damage_hotspots. If the user asks to go there, call navigate_map with a hotspot coordinate.
 - To navigate to a specific damaged building class, first call get_locations_by_damage to get coordinates, then call navigate_map with those lat/lng values.
 - Use the selected disaster context when present; do not answer from another disaster unless the user explicitly asks for it.
+- For aggregate damage by city, county, or street, call get_damage_by_area with the area_type and area_name. Use this for questions like "how bad is Pender County?" or "damage in Burgaw".
 - For address/street/house/neighborhood/block queries, call lookup_damage_at_address with the user's query. For "what's damaged near here" or a coordinate, call nearby_damage. If no matches come back, say so briefly.
 
 Knowledge:
