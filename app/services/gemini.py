@@ -755,8 +755,12 @@ def _run_tool(
         elif tool_name == "get_damage_by_area":
             area_type = str(args.get("area_type") or "city")
             area_name = str(args.get("area_name") or "")
+            if not area_name.strip():
+                return json.dumps({"error": "area_name is required"})
             column_map = {"city": "l.city", "county": "l.county", "street": "l.street"}
-            column = column_map.get(area_type, "l.city")
+            column = column_map.get(area_type)
+            if column is None:
+                return json.dumps({"error": f"Invalid area_type: must be one of city, county, street"})
             query = f"""
                 SELECT
                     {_EFFECTIVE_DAMAGE_SQL} AS damage_level,
@@ -844,7 +848,7 @@ Rules:
 - To find or navigate to the most damaged/worst-hit areas, call get_damage_hotspots. If the user asks to go there, call navigate_map with a hotspot coordinate.
 - To navigate to a specific damaged building class, first call get_locations_by_damage to get coordinates, then call navigate_map with those lat/lng values.
 - Use the selected disaster context when present; do not answer from another disaster unless the user explicitly asks for it.
-- For aggregate damage by city, county, or street, call get_damage_by_area with the area_type and area_name. Use this for questions like "how bad is Pender County?" or "damage in Burgaw".
+- For aggregate damage counts by city or county (e.g. 'how bad is Pender County?'), call get_damage_by_area. For street-level or address queries where navigation is useful, prefer lookup_damage_at_address.
 - For address/street/house/neighborhood/block queries, call lookup_damage_at_address with the user's query. For "what's damaged near here" or a coordinate, call nearby_damage. If no matches come back, say so briefly.
 
 Knowledge:
