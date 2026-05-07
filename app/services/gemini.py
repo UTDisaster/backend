@@ -82,7 +82,7 @@ TOOLS = [
         "name": "get_damage_stats",
         "description": (
             "Get damage statistics for a disaster. Returns counts of buildings "
-            "by damage classification (no-damage, minor-damage, major-damage, destroyed, unknown). "
+            "by damage classification (No Damage, Minor Damage, Major Damage, Destroyed, Unknown). "
             "Use when the user asks about how many buildings were damaged, destroyed, etc."
         ),
         "parameters": {
@@ -108,7 +108,7 @@ TOOLS = [
             "properties": {
                 "damage_level": {
                     "type": "string",
-                    "description": "One of: no-damage, minor-damage, major-damage, destroyed, unknown"
+                    "description": "One of: No Damage, Minor Damage, Major Damage, Destroyed, Unknown"
                 },
                 "disaster_id": {
                     "type": "string",
@@ -125,7 +125,7 @@ TOOLS = [
     {
         "name": "get_damage_hotspots",
         "description": (
-            "Find disaster-scoped hotspot areas ranked by major-damage plus destroyed building counts. "
+            "Find disaster-scoped hotspot areas ranked by Major Damage plus Destroyed building counts. "
             "Use when the user asks for the worst-hit, most damaged, or hardest-hit area."
         ),
         "parameters": {
@@ -243,7 +243,7 @@ TOOLS = [
         "description": (
             "Control which building damage classifications are visible on the map. "
             "Set to true to show, false to hide. Only include the classifications you want to change. "
-            "Accepts canonical names (no-damage, minor-damage, major-damage, destroyed, unknown) "
+            "Accepts FEMA labels (No Damage, Minor Damage, Major Damage, Destroyed, Unknown) "
             "or short aliases (none, minor, severe, destroyed, unknown)."
         ),
         "parameters": {
@@ -332,23 +332,29 @@ TOOLS = [
 
 # Canonical damage classification → short alias used by the frontend filter UI.
 _CLASSIFICATION_ALIAS = {
-    "no-damage": "none",
-    "minor-damage": "minor",
-    "major-damage": "severe",
-    "destroyed": "destroyed",
-    "unknown": "unknown",
-    # Short aliases pass through unchanged so Gemini can use either vocabulary.
-    "none": "none",
-    "minor": "minor",
-    "severe": "severe",
+    "no-damage": "No Damage",
+    "minor-damage": "Minor Damage",
+    "major-damage": "Major Damage",
+    "destroyed": "Destroyed",
+    "unknown": "Unknown",
+    # Short aliases map to FEMA labels so Gemini can use either vocabulary.
+    "none": "No Damage",
+    "minor": "Minor Damage",
+    "severe": "Major Damage",
+    # FEMA labels pass through unchanged.
+    "No Damage": "No Damage",
+    "Minor Damage": "Minor Damage",
+    "Major Damage": "Major Damage",
+    "Destroyed": "Destroyed",
+    "Unknown": "Unknown",
 }
 
 _DAMAGE_LABELS = {
-    "none": "no visible damage",
-    "minor": "minor damage",
-    "severe": "major damage",
-    "destroyed": "destroyed",
-    "unknown": "unknown damage",
+    "No Damage": "no visible damage",
+    "Minor Damage": "minor damage",
+    "Major Damage": "major damage",
+    "Destroyed": "destroyed",
+    "Unknown": "unknown damage",
 }
 
 _DEFAULT_SCOPED_TOOLS = {
@@ -365,20 +371,20 @@ _HOTSPOT_MIN_CLUSTER_SIZE = 10
 
 _EFFECTIVE_DAMAGE_SQL = """COALESCE(
     CASE a.damage_level
-        WHEN 'no-damage' THEN 'none'
-        WHEN 'minor-damage' THEN 'minor'
-        WHEN 'major-damage' THEN 'severe'
-        WHEN 'destroyed' THEN 'destroyed'
-        WHEN 'unknown' THEN 'unknown'
+        WHEN 'no-damage' THEN 'No Damage'
+        WHEN 'minor-damage' THEN 'Minor Damage'
+        WHEN 'major-damage' THEN 'Major Damage'
+        WHEN 'destroyed' THEN 'Destroyed'
+        WHEN 'unknown' THEN 'Unknown'
         ELSE a.damage_level
     END,
     l.classification,
-    'unknown'
+    'Unknown'
 )"""
 
 
 def _normalize_classification_filter(args: dict) -> dict:
-    """Accept both canonical and short classification keys, emit short aliases."""
+    """Accept both canonical and short classification keys, emit FEMA labels."""
     out: dict = {}
     for key, value in args.items():
         alias = _CLASSIFICATION_ALIAS.get(key)
@@ -434,7 +440,7 @@ def _summarize_damage_counts(counts: dict[str, int]) -> str:
     total = sum(counts.values())
     if total <= 0:
         return "I couldn't find any assessed buildings for that query."
-    ordered = ["destroyed", "severe", "minor", "none", "unknown"]
+    ordered = ["Destroyed", "Major Damage", "Minor Damage", "No Damage", "Unknown"]
     details = [
         _count_phrase(counts[level], _DAMAGE_LABELS[level])
         for level in ordered
@@ -446,10 +452,10 @@ def _summarize_damage_counts(counts: dict[str, int]) -> str:
 def _counts_from_rows(rows: list[dict]) -> dict[str, int]:
     counts = {level: 0 for level in _DAMAGE_LABELS}
     for row in rows:
-        level = str(row.get("damage_level") or row.get("level") or "unknown")
+        level = str(row.get("damage_level") or row.get("level") or "Unknown")
         key = _CLASSIFICATION_ALIAS.get(level, level)
         if key not in counts:
-            key = "unknown"
+            key = "Unknown"
         counts[key] += int(row.get("count") or row.get("n") or 0)
     return counts
 
@@ -476,7 +482,7 @@ def _synthesize_reply_from_tool_results(
                 total = sum(counts.values())
                 if total <= 0:
                     return f"I couldn't find any assessed buildings in {area_name}."
-                ordered = ["destroyed", "severe", "minor", "none", "unknown"]
+                ordered = ["Destroyed", "Major Damage", "Minor Damage", "No Damage", "Unknown"]
                 details = [
                     _count_phrase(counts[level], _DAMAGE_LABELS[level])
                     for level in ordered
@@ -492,23 +498,26 @@ def _synthesize_reply_from_tool_results(
             top = matches[0]
             place = _format_place(top)
             counts = {
-                "destroyed": int(top.get("destroyed") or 0),
-                "severe": int(top.get("severe") or 0),
+                "Destroyed": int(top.get("destroyed") or 0),
+                "Major Damage": int(top.get("severe") or 0),
             }
             total = int(top.get("total") or 0)
             detail = ", ".join(
                 _count_phrase(counts[level], _DAMAGE_LABELS[level])
-                for level in ("destroyed", "severe")
+                for level in ("Destroyed", "Major Damage")
                 if counts[level] > 0
             )
             if detail:
                 return f"{place} has {total} assessed buildings, including {detail}."
-            return f"{place} has {total} assessed buildings with no major-damage or destroyed buildings found."
+            return f"{place} has {total} assessed buildings with no Major Damage or Destroyed buildings found."
 
         if name == "nearby_damage":
             counts = {
-                level: int(data.get(level) or 0)
-                for level in ("none", "minor", "severe", "destroyed", "unknown")
+                "No Damage": int(data.get("none") or 0),
+                "Minor Damage": int(data.get("minor") or 0),
+                "Major Damage": int(data.get("severe") or 0),
+                "Destroyed": int(data.get("destroyed") or 0),
+                "Unknown": int(data.get("unknown") or 0),
             }
             return _summarize_damage_counts(counts)
 
@@ -632,8 +641,8 @@ def _run_tool(
                 SELECT
                     round(ST_Y(l.centroid)::numeric, 2) AS lat,
                     round(ST_X(l.centroid)::numeric, 2) AS lng,
-                    COUNT(*) FILTER (WHERE {_EFFECTIVE_DAMAGE_SQL} = 'severe') AS severe,
-                    COUNT(*) FILTER (WHERE {_EFFECTIVE_DAMAGE_SQL} = 'destroyed') AS destroyed,
+                    COUNT(*) FILTER (WHERE {_EFFECTIVE_DAMAGE_SQL} = 'Major Damage') AS severe,
+                    COUNT(*) FILTER (WHERE {_EFFECTIVE_DAMAGE_SQL} = 'Destroyed') AS destroyed,
                     COUNT(*) AS total
                 FROM locations l
                 JOIN image_pairs ip ON ip.id = l.image_pair_id
@@ -647,16 +656,16 @@ def _run_tool(
             query += f"""
                 GROUP BY lat, lng
                 HAVING (
-                    COUNT(*) FILTER (WHERE {_EFFECTIVE_DAMAGE_SQL} = 'severe')
-                    + COUNT(*) FILTER (WHERE {_EFFECTIVE_DAMAGE_SQL} = 'destroyed')
+                    COUNT(*) FILTER (WHERE {_EFFECTIVE_DAMAGE_SQL} = 'Major Damage')
+                    + COUNT(*) FILTER (WHERE {_EFFECTIVE_DAMAGE_SQL} = 'Destroyed')
                 ) > 0
                 AND COUNT(*) >= {_HOTSPOT_MIN_CLUSTER_SIZE}
                 ORDER BY
                     (
-                        COUNT(*) FILTER (WHERE {_EFFECTIVE_DAMAGE_SQL} = 'severe')
-                        + COUNT(*) FILTER (WHERE {_EFFECTIVE_DAMAGE_SQL} = 'destroyed')
+                        COUNT(*) FILTER (WHERE {_EFFECTIVE_DAMAGE_SQL} = 'Major Damage')
+                        + COUNT(*) FILTER (WHERE {_EFFECTIVE_DAMAGE_SQL} = 'Destroyed')
                     ) DESC,
-                    COUNT(*) FILTER (WHERE {_EFFECTIVE_DAMAGE_SQL} = 'destroyed') DESC
+                    COUNT(*) FILTER (WHERE {_EFFECTIVE_DAMAGE_SQL} = 'Destroyed') DESC
                 LIMIT :limit
             """
             rows = conn.execute(text(query), params).mappings().all()
@@ -890,7 +899,7 @@ Knowledge:
 - Over 150,000 structures were damaged across North and South Carolina.
 - Storm surge flooding reached up to 10 feet in some coastal areas.
 - The xBD dataset used in this tool covers the Myrtle Beach, SC area and surrounding regions.
-- Damage classifications in this system: no-damage, minor-damage, major-damage, destroyed, unknown.
+- Damage classifications in this system: No Damage, Minor Damage, Major Damage, Destroyed, Unknown.
 """
 
 
