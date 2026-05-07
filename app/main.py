@@ -252,7 +252,14 @@ _NORMALIZED_DAMAGE_SQL = """
                 WHEN 'unknown' THEN 'Unknown'
                 ELSE a.damage_level
             END,
-            l.classification
+            CASE l.classification
+                WHEN 'none' THEN 'No Damage'
+                WHEN 'minor' THEN 'Minor Damage'
+                WHEN 'severe' THEN 'Major Damage'
+                WHEN 'destroyed' THEN 'Destroyed'
+                WHEN 'unknown' THEN 'Unknown'
+                ELSE l.classification
+            END
         )
 """
 
