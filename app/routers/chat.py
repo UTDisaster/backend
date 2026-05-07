@@ -4,7 +4,7 @@ import json
 import logging
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from app.db import get_engine
@@ -27,7 +27,7 @@ class ViewportBounds(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    message:        str
+    message:        str = Field(..., min_length=1)
     conversation_id: Optional[int] = None   # None = start new conversation
     viewport:       Optional[ViewportBounds] = None
     disaster_id:    Optional[str] = None
@@ -209,8 +209,10 @@ def delete_conversation(conversation_id: int) -> dict:
     """Delete a conversation and all its messages."""
     engine = get_engine()
     with engine.begin() as conn:
-        conn.execute(
+        result = conn.execute(
             text("DELETE FROM chat.conversations WHERE id = :cid"),
             {"cid": conversation_id}
         )
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Conversation not found")
     return {"status": "deleted", "conversation_id": conversation_id}

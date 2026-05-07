@@ -751,6 +751,10 @@ def _run_tool(
             return json.dumps(dict(row))
 
         elif tool_name == "compare_disasters":
+            raw_ids = args.get("disaster_ids", [])
+            ids = [str(x) for x in raw_ids if isinstance(x, str) and x.strip()][:10]
+            if not ids:
+                return json.dumps({"error": "No valid disaster IDs provided"})
             rows = conn.execute(
                 text(f"""
                     SELECT
@@ -764,7 +768,7 @@ def _run_tool(
                     GROUP BY 1, 2
                     ORDER BY 1, count DESC
                 """),
-                {"ids": args["disaster_ids"]}
+                {"ids": ids}
             ).mappings().all()
             return json.dumps([dict(r) for r in rows])
 
@@ -801,13 +805,14 @@ def _run_tool(
 
         elif tool_name == "get_damage_by_area":
             area_type = str(args.get("area_type") or "city")
-            area_name = str(args.get("area_name") or "")
-            if not area_name.strip():
+            area_name = str(args.get("area_name") or "")[:100].strip()
+            if not area_name:
                 return json.dumps({"error": "area_name is required"})
             column_map = {"city": "l.city", "county": "l.county", "street": "l.street"}
             column = column_map.get(area_type)
             if column is None:
                 return json.dumps({"error": f"Invalid area_type: must be one of city, county, street"})
+            escaped = area_name.replace("%", r"\%").replace("_", r"\_")
             query = f"""
                 SELECT
                     {_EFFECTIVE_DAMAGE_SQL} AS damage_level,
@@ -815,9 +820,9 @@ def _run_tool(
                 FROM locations l
                 JOIN image_pairs ip ON ip.id = l.image_pair_id
                 LEFT JOIN chat.vlm_assessments a ON a.location_id = l.id
-                WHERE {column} ILIKE :area_pattern
+                WHERE {column} ILIKE :area_pattern ESCAPE '\\'
             """
-            params: dict = {"area_pattern": f"%{area_name}%"}
+            params: dict = {"area_pattern": f"%{escaped}%"}
             if args.get("disaster_id"):
                 query += " AND ip.disaster_id = :disaster_id"
                 params["disaster_id"] = args["disaster_id"]
