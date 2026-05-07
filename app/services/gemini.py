@@ -488,7 +488,10 @@ def _synthesize_reply_from_tool_results(
                 counts = _counts_from_rows(rows)
                 total = sum(counts.values())
                 if total <= 0:
-                    return f"I couldn't find any assessed buildings in {area_name}."
+                    return (
+                        f"I couldn't find any assessed buildings in {area_name}. "
+                        f"Note: this dataset only covers Pender County (NC), Duplin County (NC), and Horry County (SC)."
+                    )
                 ordered = ["Destroyed", "Major Damage", "Minor Damage", "No Damage", "Unknown"]
                 details = [
                     _count_phrase(counts[level], _DAMAGE_LABELS[level])
@@ -496,7 +499,10 @@ def _synthesize_reply_from_tool_results(
                     if counts.get(level, 0) > 0
                 ]
                 return f"In {area_name} ({area_type}), I found {total} assessed buildings: {', '.join(details)}."
-            return f"I couldn't find any assessed buildings in {area_name}."
+            return (
+                f"I couldn't find any assessed buildings in {area_name}. "
+                f"Note: this dataset only covers Pender County (NC), Duplin County (NC), and Horry County (SC)."
+            )
 
         if name == "lookup_damage_at_address":
             matches = data.get("matches") or []
@@ -910,7 +916,7 @@ Knowledge:
 - Record rainfall of 35.93 inches (91.3 cm) was recorded in Elizabethtown, NC.
 - Over 150,000 structures were damaged across North and South Carolina.
 - Storm surge flooding reached up to 10 feet in some coastal areas.
-- The xBD dataset used in this tool covers the Myrtle Beach, SC area and surrounding regions.
+- IMPORTANT: The xBD satellite imagery dataset used in this tool covers ONLY three counties: Pender County (NC), Duplin County (NC), and Horry County (SC). Cities in the dataset include Burgaw, Surf City, Topsail Beach, Holly Ridge (Pender), Wallace, Kenansville (Duplin), and Myrtle Beach, Conway, North Myrtle Beach (Horry). Queries about areas outside these three counties (e.g. New Bern, Wilmington, Jacksonville) will return no results because they are not in the dataset.
 - Damage classifications in this system: No Damage, Minor Damage, Major Damage, Destroyed, Unknown.
 """
 
