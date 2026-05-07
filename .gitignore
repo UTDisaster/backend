@@ -29,6 +29,7 @@ log.txt
 *.sqlite
 *.db
 *.db-*
+*.bak
 
 # Environment variables
 .env

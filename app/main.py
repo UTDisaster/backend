@@ -13,6 +13,7 @@ from sqlalchemy import text
 from app.config import validate_env
 from app.db import get_engine
 from app.routers.chat import router as chat_router
+from app.routers.news import router as news_router
 
 validate_env()
 
@@ -40,6 +41,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(chat_router)
+app.include_router(news_router)
 PARSED_DATA_DIR = (
     Path(os.getenv("PARSED_DATA_DIR", "data-example")).expanduser().resolve()
 )
