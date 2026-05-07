@@ -17,12 +17,14 @@ from app.db import get_engine
 CENSUS_URL = "https://geocoding.geo.census.gov/geocoder/geographies/coordinates"
 CENSUS_BENCHMARK = "Public_AR_Current"
 CENSUS_VINTAGE = "Current_Current"
+NOMINATIM_URL = "https://nominatim.openstreetmap.org/reverse"
+NOMINATIM_USER_AGENT = "UTDisaster-Enrichment/1.0"
 REQUEST_TIMEOUT_SECONDS = 5.0
 RATE_LIMIT_SLEEP_SECONDS = 0.2
+NOMINATIM_RATE_LIMIT_SECONDS = 1.0  # Nominatim requires max 1 req/sec
 DEFAULT_LIMIT = 100
 MAX_LIMIT = 1000
 
-# Nominatim fallback lives in a future PR once Census gaps are quantified.
 DEFAULT_MAP_FILENAME = "address_map.json"
 
 
@@ -80,6 +82,27 @@ def geocode_coords(
     }
 
 
+def reverse_geocode_nominatim(
+    client: httpx.Client, lat: float, lng: float
+) -> Optional[dict[str, Optional[str]]]:
+    """Call Nominatim reverse geocode and extract street/address info."""
+    params = {"lat": lat, "lon": lng, "format": "json", "addressdetails": "1"}
+    try:
+        resp = client.get(NOMINATIM_URL, params=params)
+        resp.raise_for_status()
+        payload = resp.json()
+    except (httpx.HTTPError, ValueError):
+        return None
+
+    address = payload.get("address") or {}
+    road = address.get("road")
+    if not road:
+        return None
+
+    display_name = payload.get("display_name")
+    return {"street": road, "full_address": display_name}
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Reverse-geocode location centroids via the U.S. Census Geocoder.")
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
@@ -97,6 +120,11 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Use only address map data; do not call Census for misses.",
     )
+    parser.add_argument(
+        "--nominatim",
+        action="store_true",
+        help="Use Nominatim to fill missing street data on already-enriched rows.",
+    )
     return parser.parse_args()
 
 
@@ -104,6 +132,14 @@ SELECT_SQL = """
 SELECT id, location_uid, ST_Y(centroid) AS lat, ST_X(centroid) AS lng
 FROM locations
 WHERE address_fetched_at IS NULL
+ORDER BY id
+LIMIT :limit
+"""
+
+SELECT_MISSING_STREET_SQL = """
+SELECT id, location_uid, ST_Y(centroid) AS lat, ST_X(centroid) AS lng
+FROM locations
+WHERE address_fetched_at IS NOT NULL AND street IS NULL
 ORDER BY id
 LIMIT :limit
 """
@@ -116,6 +152,14 @@ SET street = :street,
     full_address = :full_address,
     address_source = :address_source,
     address_fetched_at = now()
+WHERE id = :id
+"""
+
+UPDATE_STREET_SQL = """
+UPDATE locations
+SET street = :street,
+    full_address = COALESCE(full_address, :full_address),
+    address_source = 'nominatim'
 WHERE id = :id
 """
 
@@ -173,9 +217,53 @@ def _load_address_map(path: Optional[Path]) -> dict[str, dict[str, Optional[str]
     return loaded
 
 
+def _run_nominatim_mode(args: argparse.Namespace, limit: int) -> int:
+    """Fill missing street data using Nominatim reverse geocoding."""
+    engine = get_engine()
+    with engine.connect() as conn:
+        rows = conn.execute(text(SELECT_MISSING_STREET_SQL), {"limit": limit}).mappings().all()
+
+    if not rows:
+        print("no locations with missing street found")
+        return 0
+
+    print(f"found {len(rows)} location(s) missing street data")
+    updates = 0
+    errors = 0
+    headers = {"User-Agent": NOMINATIM_USER_AGENT}
+
+    with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS, headers=headers) as client:
+        for row in tqdm(rows, desc="nominatim"):
+            result = reverse_geocode_nominatim(client, float(row["lat"]), float(row["lng"]))
+
+            if result is None:
+                errors += 1
+                time.sleep(NOMINATIM_RATE_LIMIT_SECONDS)
+                continue
+
+            if args.dry_run:
+                print(f"[dry-run] id={row['id']} -> street={result['street']}")
+            else:
+                with engine.begin() as conn:
+                    conn.execute(text(UPDATE_STREET_SQL), {"id": row["id"], **result})
+                updates += 1
+
+            time.sleep(NOMINATIM_RATE_LIMIT_SECONDS)
+
+    if args.dry_run:
+        print(f"[dry-run] would update {len(rows) - errors} of {len(rows)} row(s)")
+    else:
+        print(f"updated {updates} row(s), {errors} error(s)/no-road")
+    return 0
+
+
 def main() -> int:
     args = _parse_args()
     limit = max(1, min(args.limit, MAX_LIMIT))
+
+    if args.nominatim:
+        return _run_nominatim_mode(args, limit)
+
     map_path = (
         Path(args.address_map_path).expanduser()
         if args.address_map_path
