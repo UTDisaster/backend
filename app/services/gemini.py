@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import os
 import json
+import logging
 import re
-from functools import lru_cache
+import threading
+
 from google import genai
 from google.genai import types
 from google.genai.errors import ClientError
@@ -17,15 +19,20 @@ from app.services.location_queries import (
 )
 
 load_app_env()
+logger = logging.getLogger(__name__)
 
 
 class ChatBackendUnavailableError(Exception):
     def __init__(
-        self, status_code: int = 503, retry_after_seconds: int | None = None
+        self,
+        status_code: int = 503,
+        retry_after_seconds: int | None = None,
+        detail: str = "Chat backend unavailable",
     ) -> None:
-        super().__init__("Chat backend unavailable")
+        super().__init__(detail)
         self.status_code = status_code
         self.retry_after_seconds = retry_after_seconds
+        self.detail = detail
 
 
 def _extract_retry_after_seconds(message: str) -> int | None:
@@ -38,12 +45,36 @@ def _extract_retry_after_seconds(message: str) -> int | None:
     return None
 
 
-@lru_cache(maxsize=1)
+_client_lock = threading.Lock()
+_cached_client: genai.Client | None = None
+
+
 def _get_client() -> genai.Client:
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise ChatBackendUnavailableError(status_code=503)
-    return genai.Client(api_key=api_key)
+    global _cached_client
+    with _client_lock:
+        if _cached_client is not None:
+            return _cached_client
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            raise ChatBackendUnavailableError(
+                status_code=503,
+                detail="Gemini API key is not configured.",
+            )
+        _cached_client = genai.Client(api_key=api_key)
+        return _cached_client
+
+
+def _invalidate_client() -> None:
+    global _cached_client
+    with _client_lock:
+        _cached_client = None
+
+
+def _is_auth_error(exc: ClientError) -> bool:
+    status = getattr(exc, "status_code", None)
+    return status in (401, 403)
+
+
 # ── Tool definitions (Gemini decides when to call these) ─────────────
 
 TOOLS = [
@@ -933,6 +964,13 @@ def chat(
         except ClientError as exc:
             message = str(exc)
             status_code = getattr(exc, "status_code", 503)
+            if _is_auth_error(exc):
+                _invalidate_client()
+                logger.error("Gemini API key rejected (HTTP %s)", status_code)
+                raise ChatBackendUnavailableError(
+                    status_code=503,
+                    detail="The Gemini API key is invalid or expired. Please check your configuration.",
+                ) from exc
             if status_code == 429 or "RESOURCE_EXHAUSTED" in message:
                 raise ChatBackendUnavailableError(
                     status_code=503,
