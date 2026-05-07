@@ -1077,7 +1077,8 @@ def chat(
                     })
             elif tool_name == "get_damage_hotspots":
                 hotspots = result_data.get("hotspots") or []
-                if hotspots:
+                has_flyto = any(a["type"] == "flyTo" for a in actions)
+                if hotspots and not has_flyto:
                     top = hotspots[0]
                     actions.append({
                         "type": "flyTo",
