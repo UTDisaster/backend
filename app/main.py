@@ -13,6 +13,7 @@ from sqlalchemy import text
 from app.config import get_image_content_base_url, validate_env
 from app.db import get_engine
 from app.routers.chat import router as chat_router
+from app.routers.data_quality import router as data_quality_router
 from app.services.image_paths import build_image_url, normalize_relative_image_path
 
 validate_env()
@@ -41,6 +42,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(chat_router)
+app.include_router(data_quality_router)
 PARSED_DATA_DIR = (
     Path(os.getenv("PARSED_DATA_DIR", "data-example")).expanduser().resolve()
 )
@@ -49,33 +51,6 @@ app.mount(
     StaticFiles(directory=str(PARSED_DATA_DIR), check_dir=False),
     name="assets",
 )
-
-MOCK_CHATS = {
-    "chat_01": {
-        "id": "chat_01",
-        "title": "Florence Sector 4 Damage",
-        "timestamp": "2026-02-26T10:00:00Z",
-        "messages": [
-            {"role": "user", "content": "How many buildings are un-classified?"},
-            {
-                "role": "assistant",
-                "content": "I found 1 un-classified building in this view.",
-            },
-        ],
-    },
-    "chat_02": {
-        "id": "chat_02",
-        "title": "Evacuation Routes",
-        "timestamp": "2026-02-25T14:30:00Z",
-        "messages": [
-            {"role": "user", "content": "Is the main road clear?"},
-            {
-                "role": "assistant",
-                "content": "Satellite data shows minor debris on Main St.",
-            },
-        ],
-    },
-}
 
 
 @app.get("/")
@@ -172,7 +147,8 @@ async def get_locations(
         JOIN image_pairs AS ip ON ip.id = l.image_pair_id
         LEFT JOIN chat.vlm_assessments AS a ON a.location_id = l.id
         WHERE
-            l.geom && ST_MakeEnvelope(:min_lng, :min_lat, :max_lng, :max_lat, 4326)
+            l.geom IS NOT NULL
+            AND l.geom && ST_MakeEnvelope(:min_lng, :min_lat, :max_lng, :max_lat, 4326)
     """
 
     params: dict[str, object] = {
@@ -283,6 +259,7 @@ async def get_disaster_summary(disaster_id: str) -> dict[str, object]:
         JOIN image_pairs AS ip ON ip.id = l.image_pair_id
         LEFT JOIN chat.vlm_assessments AS a ON a.location_id = l.id
         WHERE ip.disaster_id = :disaster_id
+          AND l.geom IS NOT NULL
     """
 
     engine = get_engine()
@@ -478,24 +455,3 @@ async def get_image_pairs(
     return {"image_pairs": pairs}
 
 
-@app.get("/chat/mock-conversations")
-async def list_conversations(search: Optional[str] = None) -> list[dict[str, str]]:
-    chat_list = list(MOCK_CHATS.values())
-
-    if search:
-        chat_list = [c for c in chat_list if search.lower() in c["title"].lower()]
-
-    chat_list.sort(key=lambda x: x["timestamp"], reverse=True)
-
-    return [
-        {"id": c["id"], "title": c["title"], "timestamp": c["timestamp"]}
-        for c in chat_list
-    ]
-
-
-@app.get("/chat/mock-conversations/{chat_id}")
-async def get_chat(chat_id: str) -> dict[str, object]:
-    chat = MOCK_CHATS.get(chat_id)
-    if not chat:
-        raise HTTPException(status_code=404, detail="Chat not found")
-    return chat
