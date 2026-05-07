@@ -132,13 +132,14 @@ def send_message(req: ChatRequest) -> dict:
                 disaster_name=req.disaster_name,
             )
         except ChatBackendUnavailableError as exc:
-            logger.warning("Chat unavailable: status=%s", exc.status_code)
+            logger.warning("Chat unavailable: status=%s detail=%s", exc.status_code, exc.detail)
             headers = {}
             if exc.retry_after_seconds:
                 headers["Retry-After"] = str(exc.retry_after_seconds)
+            detail = exc.detail if exc.detail else "Chat is temporarily unavailable. Please try again later."
             raise HTTPException(
                 status_code=503,
-                detail="Chat is temporarily unavailable. Please try again later.",
+                detail=detail,
                 headers=headers or None,
             ) from exc
 
