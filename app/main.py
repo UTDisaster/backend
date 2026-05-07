@@ -13,6 +13,7 @@ from sqlalchemy import text
 from app.config import get_image_content_base_url, validate_env
 from app.db import get_engine
 from app.routers.chat import router as chat_router
+from app.routers.data_quality import router as data_quality_router
 from app.services.image_paths import build_image_url, normalize_relative_image_path
 
 validate_env()
@@ -41,6 +42,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(chat_router)
+app.include_router(data_quality_router)
 PARSED_DATA_DIR = (
     Path(os.getenv("PARSED_DATA_DIR", "data-example")).expanduser().resolve()
 )
@@ -172,7 +174,8 @@ async def get_locations(
         JOIN image_pairs AS ip ON ip.id = l.image_pair_id
         LEFT JOIN chat.vlm_assessments AS a ON a.location_id = l.id
         WHERE
-            l.geom && ST_MakeEnvelope(:min_lng, :min_lat, :max_lng, :max_lat, 4326)
+            l.geom IS NOT NULL
+            AND l.geom && ST_MakeEnvelope(:min_lng, :min_lat, :max_lng, :max_lat, 4326)
     """
 
     params: dict[str, object] = {
@@ -283,6 +286,7 @@ async def get_disaster_summary(disaster_id: str) -> dict[str, object]:
         JOIN image_pairs AS ip ON ip.id = l.image_pair_id
         LEFT JOIN chat.vlm_assessments AS a ON a.location_id = l.id
         WHERE ip.disaster_id = :disaster_id
+          AND l.geom IS NOT NULL
     """
 
     engine = get_engine()
