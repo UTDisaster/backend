@@ -1,0 +1,14 @@
+{
+  "mapping": {
+    "major-damage": "major-damage",
+    "minor-damage": "major-damage"
+  },
+  "counts": {
+    "major-damage": {
+      "major-damage": 1
+    },
+    "minor-damage": {
+      "major-damage": 3
+    }
+  }
+}
