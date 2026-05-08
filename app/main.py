@@ -10,9 +10,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
-from app.config import validate_env
+from app.config import get_image_content_base_url, validate_env
 from app.db import get_engine
 from app.routers.chat import router as chat_router
+from app.services.image_paths import build_image_url, normalize_relative_image_path
 
 validate_env()
 
@@ -106,26 +107,15 @@ def _normalize_bbox(
 
 
 def _build_image_url(request: Request, path: Optional[str]) -> Optional[str]:
+    del request
     if not path:
         return None
 
-    normalized_path = path.lstrip("/")
-    supabase_url = os.getenv("SUPABASE_URL", "").rstrip("/")
-    supabase_bucket = os.getenv("SUPABASE_IMAGES_BUCKET", "images").strip()
-    strip_prefix = os.getenv("SUPABASE_STRIP_PREFIX", "images/").strip().lstrip("/")
-    use_basename = os.getenv("SUPABASE_USE_BASENAME", "false").lower() == "true"
-
-    if strip_prefix and normalized_path.startswith(strip_prefix):
-        normalized_path = normalized_path[len(strip_prefix) :]
-        normalized_path = normalized_path.lstrip("/")
-
-    if use_basename:
-        normalized_path = Path(normalized_path).name
-
-    if supabase_url:
-        return f"{supabase_url}/storage/v1/object/public/{supabase_bucket}/{normalized_path}"
-
-    return str(request.url_for("assets", path=normalized_path))
+    base_url = get_image_content_base_url()
+    try:
+        return build_image_url(base_url, normalize_relative_image_path(path))
+    except ValueError:
+        return None
 
 
 @app.get("/locations")
@@ -162,17 +152,14 @@ async def get_locations(
             l.image_pair_id,
             l.feature_type,
             l.classification,
-            COALESCE(
-                CASE a.damage_level
-                    WHEN 'no-damage' THEN 'none'
-                    WHEN 'minor-damage' THEN 'minor'
-                    WHEN 'major-damage' THEN 'severe'
-                    WHEN 'destroyed' THEN 'destroyed'
-                    WHEN 'unknown' THEN 'unknown'
-                    ELSE a.damage_level
-                END,
-                l.classification
-            ) AS damage_level,
+            CASE a.damage_level
+                WHEN 'no-damage' THEN 'No Damage'
+                WHEN 'minor-damage' THEN 'Minor Damage'
+                WHEN 'major-damage' THEN 'Major Damage'
+                WHEN 'destroyed' THEN 'Destroyed'
+                WHEN 'unknown' THEN 'Unknown'
+                ELSE a.damage_level
+            END AS damage_level,
             a.confidence AS vlm_confidence,
             a.description AS vlm_description,
             ip.disaster_id,
@@ -258,14 +245,22 @@ _HOTSPOT_MIN_CLUSTER_SIZE = 10
 _NORMALIZED_DAMAGE_SQL = """
         COALESCE(
             CASE a.damage_level
-                WHEN 'no-damage' THEN 'none'
-                WHEN 'minor-damage' THEN 'minor'
-                WHEN 'major-damage' THEN 'severe'
-                WHEN 'destroyed' THEN 'destroyed'
-                WHEN 'unknown' THEN 'unknown'
-                ELSE a.damage_level
+                WHEN 'no-damage' THEN 'No Damage'
+                WHEN 'minor-damage' THEN 'Minor Damage'
+                WHEN 'major-damage' THEN 'Major Damage'
+                WHEN 'destroyed' THEN 'Destroyed'
+                WHEN 'unknown' THEN 'Unknown'
+                ELSE NULL
             END,
-            l.classification
+            CASE l.classification
+                WHEN 'none' THEN 'No Damage'
+                WHEN 'minor' THEN 'Minor Damage'
+                WHEN 'severe' THEN 'Major Damage'
+                WHEN 'destroyed' THEN 'Destroyed'
+                WHEN 'unknown' THEN 'Unknown'
+                ELSE NULL
+            END,
+            'Unknown'
         )
 """
 
@@ -275,11 +270,11 @@ async def get_disaster_summary(disaster_id: str) -> dict[str, object]:
     query = f"""
         SELECT
             COUNT(*) AS total_locations,
-            COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'none') AS none_count,
-            COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'minor') AS minor_count,
-            COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'severe') AS severe_count,
-            COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'destroyed') AS destroyed_count,
-            COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'unknown') AS unknown_count,
+            COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'No Damage') AS none_count,
+            COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'Minor Damage') AS minor_count,
+            COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'Major Damage') AS severe_count,
+            COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'Destroyed') AS destroyed_count,
+            COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'Unknown') AS unknown_count,
             MIN(ST_Y(l.centroid)) AS min_lat,
             MAX(ST_Y(l.centroid)) AS max_lat,
             MIN(ST_X(l.centroid)) AS min_lng,
@@ -303,11 +298,11 @@ async def get_disaster_summary(disaster_id: str) -> dict[str, object]:
         "disaster_id": disaster_id,
         "total_locations": int(row["total_locations"]),
         "by_classification": {
-            "none": int(row["none_count"] or 0),
-            "minor": int(row["minor_count"] or 0),
-            "severe": int(row["severe_count"] or 0),
-            "destroyed": int(row["destroyed_count"] or 0),
-            "unknown": int(row["unknown_count"] or 0),
+            "No Damage": int(row["none_count"] or 0),
+            "Minor Damage": int(row["minor_count"] or 0),
+            "Major Damage": int(row["severe_count"] or 0),
+            "Destroyed": int(row["destroyed_count"] or 0),
+            "Unknown": int(row["unknown_count"] or 0),
         },
         "bbox": {
             "minLat": row["min_lat"],
@@ -327,8 +322,8 @@ async def get_location_hotspots(
         SELECT
             round(ST_Y(l.centroid)::numeric, 2) AS lat_bin,
             round(ST_X(l.centroid)::numeric, 2) AS lng_bin,
-            COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'severe') AS severe_count,
-            COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'destroyed') AS destroyed_count,
+            COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'Major Damage') AS severe_count,
+            COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'Destroyed') AS destroyed_count,
             COUNT(*) AS total_count
         FROM locations AS l
         JOIN image_pairs AS ip ON ip.id = l.image_pair_id
@@ -337,16 +332,16 @@ async def get_location_hotspots(
           AND l.centroid IS NOT NULL
         GROUP BY lat_bin, lng_bin
         HAVING (
-            COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'severe')
-          + COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'destroyed')
+            COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'Major Damage')
+          + COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'Destroyed')
         ) > 0
         AND COUNT(*) >= {_HOTSPOT_MIN_CLUSTER_SIZE}
         ORDER BY
             (
-                COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'severe')
-              + COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'destroyed')
+                COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'Major Damage')
+              + COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'Destroyed')
             ) DESC,
-            COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'destroyed') DESC
+            COUNT(*) FILTER (WHERE {_NORMALIZED_DAMAGE_SQL} = 'Destroyed') DESC
         LIMIT :limit
     """
 

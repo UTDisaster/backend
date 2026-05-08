@@ -1,10 +1,10 @@
 # Backend dev commands. Run `make dev` after copying .env.example to .env.
 
-.PHONY: dev db seed test eval lint migrate
+.PHONY: dev db seed test eval lint migrate enrich enrich-streets export-address-map
 
 .env:
 	cp .env.example .env
-	@echo ">>> Created .env from .env.example. Fill in GEMINI_API_KEY and rerun 'make dev'."
+	@echo ">>> Created .env template. Fill .env values and rerun 'make dev'."
 	@false
 
 dev: .env
@@ -14,7 +14,10 @@ db:
 	docker compose up -d db
 
 seed:
-	python util/seed_minimal.py
+	@echo "No seed script is provided. Use preprocess-data load instead:"
+	@echo "  DATABASE_URL='postgresql+psycopg://utd:utdpass@127.0.0.1:5433/utd_data' \\"
+	@echo "  python util/preprocess-data.py --start-at load --stop-after load --input <path-to-parsed_data.json>"
+	@false
 
 test:
 	pytest
@@ -26,4 +29,13 @@ lint:
 	ruff check . && black --check .
 
 migrate:
-	python util/migrate.py
+	python -m util.migrate
+
+enrich:
+	python -m util.enrich_addresses --limit 1000
+
+enrich-streets:
+	python -m util.enrich_addresses --nominatim --limit 500
+
+export-address-map:
+	python -m util.export_address_map --pretty

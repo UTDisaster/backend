@@ -32,6 +32,15 @@ def _to_valid_float(value: Any) -> float | None:
     return parsed
 
 
+def _to_content_path(raw_path: Any, disaster_id: str) -> str:
+    """Normalize stored image path to <filename> only."""
+    candidate = str(raw_path or "").strip().replace("\\", "/")
+    filename = Path(candidate).name
+    if not filename:
+        raise ValueError(f"invalid image path: {raw_path!r}")
+    return filename
+
+
 def build_polygon_wkt(location: dict[str, Any]) -> str | None:
     points_container = location.get("points", {})
     raw_points = points_container.get("post") or points_container.get("pre") or []
@@ -190,7 +199,6 @@ def compute_phase_bounds(
 
 def ensure_schema(conn: Any) -> None:
     conn.execute(text("CREATE EXTENSION IF NOT EXISTS postgis"))
-    metadata.drop_all(conn, checkfirst=True)
     metadata.create_all(conn)
 
 
@@ -226,8 +234,14 @@ def run_load_step(
                     "id": image_pair_id,
                     "disaster_id": disaster_id,
                     "pair_id": str(image.get("pairId", "")),
-                    "pre_path": str(image.get("path", {}).get("pre", "")),
-                    "post_path": str(image.get("path", {}).get("post", "")),
+                    "pre_path": _to_content_path(
+                        image.get("path", {}).get("pre", ""),
+                        disaster_id,
+                    ),
+                    "post_path": _to_content_path(
+                        image.get("path", {}).get("post", ""),
+                        disaster_id,
+                    ),
                     "pre_image_id": image.get("id", {}).get("pre"),
                     "post_image_id": image.get("id", {}).get("post"),
                     "pre_min_lat": pre_bounds[0] if pre_bounds else None,

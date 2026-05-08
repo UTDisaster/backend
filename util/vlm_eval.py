@@ -16,8 +16,6 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
-from dotenv import load_dotenv
-
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
@@ -25,8 +23,9 @@ if str(ROOT_DIR) not in sys.path:
 import sqlalchemy as sa
 
 from app.db import get_engine
+from app.env_loader import load_app_env
 
-load_dotenv()
+load_app_env()
 
 CLASSES = ["none", "minor", "severe", "destroyed"]
 ALL_CLASSES = CLASSES + ["unknown"]

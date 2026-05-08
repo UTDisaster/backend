@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import os
 from functools import lru_cache
-from dotenv import load_dotenv 
+import os
+from app.env_loader import load_app_env
+from app.config import get_database_url
 
-load_dotenv()
+load_app_env()
 
 from sqlalchemy import (
     BigInteger,
@@ -19,6 +20,7 @@ from sqlalchemy import (
     create_engine,
 )
 from sqlalchemy.engine import Engine
+from sqlalchemy.pool import NullPool
 from sqlalchemy.types import UserDefinedType
 
 
@@ -102,10 +104,23 @@ Index("ix_locations_classification", locations.c.classification)
 
 @lru_cache(maxsize=4)
 def get_engine(database_url: str | None = None) -> Engine:
-    db_url = database_url or os.getenv("DATABASE_URL")
+    db_url = database_url or get_database_url()
 
     if not db_url:
         raise RuntimeError("DATABASE_URL is not set")
+
+    app_env = (os.getenv("APP_ENV", "dev") or "dev").strip().lower()
+    is_vercel = bool((os.getenv("VERCEL", "") or "").strip())
+    use_null_pool = app_env == "prod" or is_vercel
+
+    if use_null_pool:
+        # In serverless/prod, avoid holding pooled sessions per runtime instance.
+        # This prevents Supabase session/client exhaustion under bursty concurrency.
+        return create_engine(
+            db_url,
+            future=True,
+            poolclass=NullPool,
+        )
 
     # Pool connections to avoid exhausting max_clients on frequent requests
     return create_engine(
