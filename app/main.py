@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query, Request, status
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
@@ -14,6 +15,9 @@ from app.config import get_image_content_base_url, validate_env
 from app.db import get_engine
 from app.routers.chat import router as chat_router
 from app.services.image_paths import build_image_url, normalize_relative_image_path
+from app.services.vlm.classifier import GeminiVLMClassifier
+from app.services.vlm.errors import VLMFatalError, VLMParseError, VLMRateLimitError
+from app.services.vlm.uploads import UploadedImageError, normalize_uploaded_image
 
 validate_env()
 
@@ -86,6 +90,59 @@ async def root() -> dict[str, str]:
 @app.get("/health", status_code=status.HTTP_200_OK)
 async def health() -> dict[str, int | str]:
     return {"status": "OK", "status_code": status.HTTP_200_OK}
+
+
+@app.post("/vlm/assess")
+async def assess_vlm_pair(
+    pre_image: UploadFile = File(...),
+    post_image: UploadFile = File(...),
+) -> dict[str, object]:
+    try:
+        pre_bytes = await normalize_uploaded_image(
+            pre_image,
+            field_name="pre_image",
+        )
+        post_bytes = await normalize_uploaded_image(
+            post_image,
+            field_name="post_image",
+        )
+        result = GeminiVLMClassifier(prompt_version="v2").classify_pair(
+            pre_bytes,
+            post_bytes,
+        )
+    except UploadedImageError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    except VLMRateLimitError as exc:
+        retry_after = (
+            str(max(1, math.ceil(exc.retry_after_seconds)))
+            if exc.retry_after_seconds is not None
+            else None
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Gemini VLM is rate limited. Please retry shortly.",
+            headers={"Retry-After": retry_after} if retry_after else None,
+        ) from exc
+    except VLMParseError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Gemini VLM returned an unparseable assessment.",
+        ) from exc
+    except VLMFatalError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc) if "GEMINI_API_KEY" in str(exc) else "Gemini VLM is unavailable.",
+        ) from exc
+
+    return {
+        "score": result.score,
+        "label": result.label,
+        "confidence": result.confidence,
+        "description": result.description,
+        "model": result.model,
+        "prompt_version": result.prompt_version,
+        "latency_ms": result.latency_ms,
+    }
 
 
 def _normalize_bbox(
